@@ -5139,8 +5139,6 @@ function TaskDetail() {
     const now = new Date().toISOString()
     const updated = {
       ...project,
-      title: updates.title !== undefined ? updates.title : currentTask.title,
-      description: updates.description !== undefined ? updates.description : currentTask.description,
       updated_at: now,
       modified_by: user?.id,
       modified_by_name: userName,
@@ -5283,7 +5281,7 @@ function TaskDetail() {
     setEditingCommentId(null)
 
     if (!demoMode) {
-      await db.updateComment(commentId, { content: editingCommentContent })
+      await db.updateComment(commentId, { content: editingCommentContent, updated_at: now })
     }
   }
 
@@ -5469,7 +5467,8 @@ function TaskDetail() {
     const comment = {
       id: uuid(),
       content: newComment.trim(),
-      user_name: user?.user_metadata?.name || 'Demo User',
+      user_id: user?.id,
+      user_name: user?.user_metadata?.name || user?.email || 'Demo User',
       created_at: new Date().toISOString()
     }
     updateTask({ comments: [...(currentTask.comments || []), comment] })
@@ -6004,23 +6003,30 @@ function TaskDetail() {
 
                     {isEditing ? (
                       <div className="mt-1">
-                        <input
-                          type="text"
+                        <textarea
                           value={editingCommentContent}
-                          onChange={e => setEditingCommentContent(e.target.value)}
+                          onChange={e => {
+                            setEditingCommentContent(e.target.value)
+                            e.target.style.height = 'auto'
+                            e.target.style.height = e.target.scrollHeight + 'px'
+                          }}
                           onKeyDown={e => {
-                            if (e.key === 'Enter') {
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                               e.preventDefault();
                               saveCommentEdit(c.id);
                             }
                             if (e.key === 'Escape') setEditingCommentId(null)
                           }}
-                          className="w-full bg-white border border-gray-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none"
+                          className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-brand-500 focus:border-transparent outline-none resize-none min-h-[60px]"
                           autoFocus
+                          onFocus={e => {
+                            e.target.style.height = 'auto'
+                            e.target.style.height = e.target.scrollHeight + 'px'
+                          }}
                         />
                         <div className="flex gap-2 mt-2 text-xs">
-                          <button onClick={() => saveCommentEdit(c.id)} className="text-blue-600 hover:underline font-medium">Save</button>
-                          <button onClick={() => setEditingCommentId(null)} className="text-gray-500 hover:underline">Cancel</button>
+                          <button onClick={() => saveCommentEdit(c.id)} className="px-3 py-1.5 bg-gray-900 text-white rounded-md hover:bg-black font-medium transition-colors">Save</button>
+                          <button onClick={() => setEditingCommentId(null)} className="px-3 py-1.5 text-gray-500 hover:bg-gray-100 rounded-md transition-colors">Cancel</button>
                         </div>
                       </div>
                     ) : (
@@ -6037,21 +6043,27 @@ function TaskDetail() {
               )
             })}
           </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
+          <div className="flex flex-col gap-2">
+            <textarea
               placeholder="Write a comment..."
               value={newComment}
-              onChange={e => setNewComment(e.target.value)}
+              onChange={e => {
+                setNewComment(e.target.value)
+                e.target.style.height = 'auto'
+                e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px'
+              }}
               onKeyDown={e => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
                   addComment();
                 }
               }}
-              className="input-sleek"
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 outline-none resize-none min-h-[45px] transition-all"
             />
-            <button onClick={addComment} className="btn-gradient px-4">Post</button>
+            <div className="flex justify-between items-center px-1">
+              <span className="text-[10px] text-gray-400">Press {navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'} + Enter to post</span>
+              <button onClick={addComment} className="btn-gradient px-4 py-1.5 text-sm rounded-lg opacity-90 hover:opacity-100 transition-opacity">Post</button>
+            </div>
           </div>
         </div>
 
