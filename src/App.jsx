@@ -1899,6 +1899,12 @@ const TodayItem = React.memo(({
                   {project.title}
                 </div>
               )}
+              {item.reminder_date && (
+                <div className={`text-[10px] flex items-center gap-1 mt-0.5 ${isOverdue(item.reminder_date) && !item.is_done ? 'text-red-600' : 'text-amber-600'}`}>
+                  <Clock className="w-3 h-3" />
+                  {formatReminderDate(item.reminder_date)}
+                </div>
+              )}
               {/* Tags Display in TodayItem */}
               {item.tags?.length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-1">
@@ -5103,6 +5109,8 @@ function TaskDetail() {
   const [selectedSubtaskIds, setSelectedSubtaskIds] = useState(new Set())
   const [editingSubtaskId, setEditingSubtaskId] = useState(null)
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState('')
+  const [isEditingTitle, setIsEditingTitle] = useState(false)
+  const [localTitle, setLocalTitle] = useState(task?.title || '')
   const dragSubtaskIndex = useRef(null)
 
   const onSubtaskDragStart = (e, i) => {
@@ -5199,7 +5207,9 @@ function TaskDetail() {
   // Sync local description when currentTask changes (e.g. switching tasks)
   useEffect(() => {
     setLocalDescription(currentTask?.description || '')
-  }, [currentTask?.id, currentTask?.description])
+    setLocalTitle(currentTask?.title || '')
+    setIsEditingTitle(false)
+  }, [currentTask?.id, currentTask?.description, currentTask?.title])
 
   const [isEditingDescription, setIsEditingDescription] = useState(false)
 
@@ -5218,6 +5228,39 @@ function TaskDetail() {
       }
     }
     setIsEditingDescription(false)
+  }
+
+  const saveTitle = async () => {
+    const trimmed = localTitle.trim()
+    if (!trimmed) {
+      setLocalTitle(currentTask.title)
+      setIsEditingTitle(false)
+      return
+    }
+
+    if (trimmed !== currentTask.title) {
+      updateTask({ title: trimmed })
+      if (!demoMode) {
+        try {
+          const { error } = await db.updateTask(task.id, { title: trimmed, modified_by: user?.id, updated_at: new Date().toISOString() })
+          if (error) {
+            console.warn('Failed to save title', error)
+            showToast('Failed to save title')
+          } else {
+            // refresh local projects to reflect updated title
+            try { await reloadProjects() } catch (e) { }
+          }
+        } catch (e) {
+          console.warn('Failed to save title', e)
+        }
+      }
+    }
+    setIsEditingTitle(false)
+  }
+
+  const cancelTitleEdit = () => {
+    setLocalTitle(currentTask.title)
+    setIsEditingTitle(false)
   }
 
   const cancelDescriptionEdit = () => {
@@ -5531,20 +5574,48 @@ function TaskDetail() {
             {currentTask.is_completed && <Check className="w-4 h-4" />}
           </button>
           <div className="flex-1 min-w-0">
-            <input
-              type="text"
-              value={currentTask.title}
-              onChange={e => updateTask({ title: e.target.value })}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && e.shiftKey) {
-                  e.preventDefault()
-                  // Task title is saved locally on change, but we could trigger a DB sync if needed.
-                  // For now, Shift+Enter just blurs to signify "done"
-                  e.currentTarget.blur()
-                }
-              }}
-              className={`w-full text-xl sm:text-2xl font-bold bg-transparent outline-none ${taskOverdue ? 'text-red-700' : ''}`}
-            />
+            {isEditingTitle ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={localTitle}
+                  onChange={e => setLocalTitle(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      saveTitle()
+                    } else if (e.key === 'Escape') {
+                      cancelTitleEdit()
+                    }
+                  }}
+                  className={`flex-1 text-xl sm:text-2xl font-bold bg-white border border-gray-200 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 ${taskOverdue ? 'text-red-700' : ''}`}
+                  autoFocus
+                />
+                <button
+                  onClick={saveTitle}
+                  className="px-3 py-1.5 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg shadow-sm transition-all"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={cancelTitleEdit}
+                  className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 group/title">
+                <h2 className={`text-xl sm:text-2xl font-bold ${taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>{currentTask.title}</h2>
+                <button
+                  onClick={() => setIsEditingTitle(true)}
+                  className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-opacity opacity-0 group-hover/title:opacity-100"
+                  title="Rename Task"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                </button>
+              </div>
+            )}
             {/* Tags Display and Picker Button */}
             <div className="flex flex-wrap items-center gap-2 mt-2">
               {/* Existing Tags Pills */}
