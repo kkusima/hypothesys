@@ -5110,7 +5110,7 @@ function TaskDetail() {
   const [editingSubtaskId, setEditingSubtaskId] = useState(null)
   const [editingSubtaskTitle, setEditingSubtaskTitle] = useState('')
   const [isEditingTitle, setIsEditingTitle] = useState(false)
-  const [localTitle, setLocalTitle] = useState(task?.title || '')
+  const [localTitle, setLocalTitle] = useState(selectedTask?.task?.title || '')
   const dragSubtaskIndex = useRef(null)
 
   const onSubtaskDragStart = (e, i) => {
