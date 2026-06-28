@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS public.notification_settings (
 
 CREATE INDEX IF NOT EXISTS idx_notification_settings_user ON public.notification_settings(user_id);
 
-CREATE OR REPLACE FUNCTION public.is_project_member(project_uuid UUID)
+CREATE OR REPLACE FUNCTION public.is_project_member(p_project_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
 SECURITY DEFINER
@@ -250,10 +250,10 @@ SET search_path = public
 AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.projects p
-    WHERE p.id = project_uuid AND p.owner_id = auth.uid()
+    WHERE p.id = p_project_id AND p.owner_id = auth.uid()
   ) OR EXISTS (
     SELECT 1 FROM public.project_members pm
-    WHERE pm.project_id = project_uuid AND pm.user_id = auth.uid()
+    WHERE pm.project_id = p_project_id AND pm.user_id = auth.uid()
   );
 $$;
 
