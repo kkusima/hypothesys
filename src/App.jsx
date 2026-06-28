@@ -4826,8 +4826,9 @@ function ProjectDetail() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-16">
-      {/* Project header — pinned just below the global header + tab bar */}
-      <div className="bg-white/80 backdrop-blur-lg sticky top-28 z-20">
+      {/* Project header + stages — frozen together below the global header + tab bar */}
+      <div className="sticky top-28 z-20">
+      <div className="bg-white/80 backdrop-blur-lg">
         <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center gap-2 sm:gap-4">
             <button
@@ -4909,6 +4910,7 @@ function ProjectDetail() {
             ))}
           </div>
         </div>
+      </div>
       </div>
 
       {/* Tasks */}
