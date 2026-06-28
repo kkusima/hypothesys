@@ -5042,7 +5042,7 @@ function ProjectDetail() {
                         className="flex-1 cursor-pointer min-w-0"
                         onClick={() => { setSelectedTask({ task, stageIndex }); setView('task'); }}
                       >
-                        <div className={`font-medium ${task.is_completed ? 'line-through text-gray-400' : taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>
+                        <div className={`font-medium break-words ${task.is_completed ? 'line-through text-gray-400' : taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>
                           {task.title}
                         </div>
                         {/* Tag Pills */}
@@ -5935,6 +5935,23 @@ function TaskDetail() {
 
   const [isEditingDescription, setIsEditingDescription] = useState(false)
 
+  // Long descriptions collapse by default (so subtasks stay reachable).
+  const [descExpanded, setDescExpanded] = useState(false)
+  const [descOverflows, setDescOverflows] = useState(false)
+  const descRef = useRef(null)
+
+  // Reset to collapsed when switching tasks or after editing.
+  useEffect(() => {
+    setDescExpanded(false)
+  }, [currentTask?.id, isEditingDescription])
+
+  // Measure (while collapsed) whether the description is tall enough to need a toggle.
+  useEffect(() => {
+    const el = descRef.current
+    if (!el || isEditingDescription || descExpanded) return
+    setDescOverflows(el.scrollHeight - el.clientHeight > 4)
+  }, [currentTask?.description, isEditingDescription, descExpanded])
+
   const saveDescription = async () => {
     if (localDescription !== currentTask.description) {
       updateTask({ description: localDescription })
@@ -6570,12 +6587,28 @@ function TaskDetail() {
             </div>
           ) : (
             <div className="group">
-              <div
-                className={`text-gray-700 whitespace-pre-wrap ${!currentTask.description ? 'text-gray-400 italic' : ''}`}
-                onDoubleClick={() => setIsEditingDescription(true)}
-              >
-                {currentTask.description || 'No description provided.'}
+              <div className="relative">
+                <div
+                  ref={descRef}
+                  className={`text-gray-700 whitespace-pre-wrap break-words ${!currentTask.description ? 'text-gray-400 italic' : ''}`}
+                  style={!descExpanded ? { maxHeight: '4.5rem', overflow: 'hidden' } : undefined}
+                  onDoubleClick={() => setIsEditingDescription(true)}
+                >
+                  {currentTask.description || 'No description provided.'}
+                </div>
+                {/* Fade hint when collapsed */}
+                {!descExpanded && descOverflows && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-white to-transparent" />
+                )}
               </div>
+              {descOverflows && (
+                <button
+                  onClick={() => setDescExpanded(v => !v)}
+                  className="mt-1 text-xs font-semibold text-blue-600 hover:text-blue-700"
+                >
+                  {descExpanded ? 'Show less' : 'Show more'}
+                </button>
+              )}
               {currentTask.updated_at && (
                 <div className="mt-3 text-xs text-gray-400 border-t border-gray-100 pt-2 flex items-center gap-1">
                   <span>Modified {formatRelativeDate(currentTask.updated_at)}</span>
