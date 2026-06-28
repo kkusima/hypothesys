@@ -262,22 +262,32 @@ export const db = {
 
     try {
       devLog('🗑️ Deleting project:', id)
-      const { error } = await supabase
+      // .select() returns the rows actually deleted so we can tell when RLS
+      // silently removes 0 rows (delete "succeeds" but nothing is deleted).
+      const { data, error } = await supabase
         .from('projects')
         .delete()
         .eq('id', id)
         .eq('owner_id', userId) // Security check
+        .select('id')
 
       if (error) {
         logError('deleteProject', error)
-        return { error }
+        return { data: null, error, deletedCount: 0 }
       }
 
-      devLog('✅ Project deleted')
-      return { error: null }
+      const deletedCount = data?.length || 0
+      if (deletedCount === 0) {
+        // No error but nothing deleted — almost always a missing RLS delete
+        // policy or the current user isn't the owner.
+        logError('deleteProject', new Error('Delete affected 0 rows (RLS policy or ownership)'))
+      } else {
+        devLog('✅ Project deleted')
+      }
+      return { data, error: null, deletedCount }
     } catch (error) {
       logError('deleteProject:catch', error)
-      return { error }
+      return { data: null, error, deletedCount: 0 }
     }
   },
 

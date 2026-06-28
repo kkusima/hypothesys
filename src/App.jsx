@@ -2403,7 +2403,7 @@ function DuplicatePopup() {
 }
 
 function ProjectsView() {
-  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages, deletedProjectIdsRef } = useApp()
+  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages, deletedProjectIdsRef, reloadProjects, showToast } = useApp()
   const { user, demoMode } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
   const [sortOption, setSortOption] = useState('priority')
@@ -2607,8 +2607,20 @@ function ProjectsView() {
     if (demoMode) {
       setProjects(projects.filter(p => p.id !== id))
     } else {
+      // Optimistically remove, then confirm the DB actually deleted the row.
       setProjects(projects.filter(p => p.id !== id))
-      await db.deleteProject(id)
+      const { error, deletedCount } = await db.deleteProject(id)
+
+      if (error || deletedCount === 0) {
+        // Delete didn't persist (e.g. missing RLS delete policy, or not the
+        // owner). Stop guarding it and restore the true server state.
+        deletedProjectIdsRef.current.delete(id)
+        showToast?.(error
+          ? 'Could not delete project. Please try again.'
+          : "Couldn't delete this project — you may not have permission.")
+        reloadProjects?.()
+        return
+      }
     }
 
     // Cleanup guard after propagation delay
