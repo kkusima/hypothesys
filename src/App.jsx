@@ -3563,7 +3563,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
 
         <div className="min-w-0 flex-1">
           <div className="flex items-start gap-2">
-            <div className={`min-w-0 flex-1 break-words text-sm font-semibold leading-5 ${task.is_completed ? 'line-through text-slate-400' : taskOverdue ? 'text-red-700' : 'text-slate-900'}`}>
+            <div className={`min-w-0 flex-1 break-words text-[15px] font-semibold leading-6 ${task.is_completed ? 'line-through text-slate-400' : taskOverdue ? 'text-red-700' : 'text-slate-900'}`}>
               {task.title}
             </div>
             <button
@@ -3572,7 +3572,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
                 e.stopPropagation()
                 onOpenTask(project, task, stageIndex)
               }}
-              className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+              className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
               title="Open task"
             >
               Open
@@ -3580,7 +3580,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
           </div>
 
           {task.description && (
-            <p className="mt-1 break-words text-xs leading-5 text-slate-500">
+            <p className="mt-1 break-words text-sm leading-5 text-slate-500">
               {task.description}
             </p>
           )}
@@ -3628,7 +3628,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
   )
 }
 
-function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, onAddToToday, onMoveTask }) {
+function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, onAddToToday, onMoveTask, onOpenProject }) {
   const [isExpanded, setIsExpanded] = useState(isActive)
   const [showCompleted, setShowCompleted] = useState(false)
   const [isDropTarget, setIsDropTarget] = useState(false)
@@ -3661,27 +3661,45 @@ function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, on
   }
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-sm">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(value => !value)}
-        className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors ${isExpanded ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/70'}`}
-        title={isExpanded ? 'Collapse stage' : 'Expand stage'}
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold text-slate-900">{stage.name}</span>
-            {isActive && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">Active</span>}
+    <section className={`overflow-hidden rounded-2xl border bg-white/90 shadow-sm ${isActive ? 'border-indigo-200 ring-1 ring-indigo-100' : 'border-slate-200'}`}>
+      <div className={`flex w-full items-center justify-between gap-3 px-4 py-3 transition-colors ${isExpanded ? 'bg-slate-50' : 'bg-white'}`}>
+        <button
+          type="button"
+          onClick={() => setIsExpanded(value => !value)}
+          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+          title={isExpanded ? 'Collapse stage' : 'Expand stage'}
+        >
+          <div className="min-w-0 flex-1">
+            {isActive && <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-indigo-500">Current stage</div>}
+            <div className="mt-0.5 truncate text-base font-semibold text-slate-900">{stage.name}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+              <span>{activeTasks.length} active</span>
+              <span aria-hidden>·</span>
+              <span>{completedTasks.length} done</span>
+            </div>
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-            <span>{activeTasks.length} active</span>
-            <span>{completedTasks.length} done</span>
-          </div>
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {isActive && onOpenProject && (
+            <button
+              type="button"
+              onClick={() => onOpenProject(project)}
+              className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+              title="Open project"
+            >
+              Open project
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsExpanded(value => !value)}
+            className="flex items-center rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            title={isExpanded ? 'Collapse' : 'Expand'}
+          >
+            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
         </div>
-        <div className="flex shrink-0 items-center text-slate-400" title={isExpanded ? 'Collapse' : 'Expand'}>
-          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </div>
-      </button>
+      </div>
 
       {isExpanded && (
         <div
@@ -3753,7 +3771,6 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
   const [showAllStages, setShowAllStages] = useState(false)
 
   const activeStageIndex = project.stages?.length ? Math.min(project.current_stage_index || 0, project.stages.length - 1) : 0
-  const activeStageName = project.stages?.[activeStageIndex]?.name || 'No stage'
   const totalStages = project.stages?.length || 0
 
   const stats = useMemo(() => {
@@ -3771,95 +3788,84 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
 
   return (
     <article
-      className={`flex min-h-full min-w-[18rem] max-w-[22rem] flex-col rounded-[28px] border border-slate-200 bg-slate-50/80 p-3 shadow-sm backdrop-blur transition-all ${isSelected ? 'ring-2 ring-indigo-500/40' : ''}`}
+      className={`flex min-h-full w-[88vw] sm:w-[34rem] shrink-0 flex-col rounded-[28px] border border-slate-200 bg-slate-50/80 p-4 shadow-sm backdrop-blur transition-all ${isSelected ? 'ring-2 ring-indigo-500/40' : ''}`}
       style={{ animationDelay: `${index * 45}ms` }}
     >
-      <div className="flex items-start justify-between gap-3 rounded-[22px] border border-white/70 bg-white px-4 py-3 shadow-sm">
-        <button
-          type="button"
-          onClick={() => {
-            if (isSelectionMode) {
-              onToggleSelect(project.id)
-              return
-            }
-            onOpenProject(project)
-          }}
-          className="flex min-w-0 flex-1 items-start gap-3 text-left"
-          title="Open project"
-        >
-          <span className="text-3xl">{project.emoji}</span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h3 className="truncate text-sm font-bold text-slate-900">{project.title}</h3>
-              {isShared && (
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
-                  <Share2 className="w-3 h-3" />
-                  Shared
-                </span>
-              )}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-              <span>{totalStages} stages</span>
-              <span>{stats.activeTasks} active</span>
-              <span>{stats.completedTasks} done</span>
-            </div>
-          </div>
-        </button>
-
-        <div className="flex shrink-0 items-start gap-1">
-          {isSelectionMode && (
-            <button
-              type="button"
-              onClick={() => onToggleSelect(project.id)}
-              className={`mt-1 flex h-6 w-6 items-center justify-center rounded-md border text-xs ${isSelected ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-400'}`}
-              title={isSelected ? 'Deselect project' : 'Select project'}
-            >
-              {isSelected ? <Check className="w-3.5 h-3.5" /> : null}
-            </button>
-          )}
-          {!isSelectionMode && (
-            <button
-              type="button"
-              onClick={() => setShowMenu(value => !value)}
-              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
-              title="Project actions"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Divider between project title and stage info */}
-      <div className="my-2 mx-2 h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent" />
-
-      <div className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Current stage</div>
-            <div className="mt-1 text-sm font-semibold text-slate-900">{activeStageName}</div>
-          </div>
+      {/* Project header: order number + emoji + title + menu, with progress bar directly below */}
+      <div className="rounded-[22px] border border-white/70 bg-white px-5 py-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
           <button
             type="button"
-            onClick={() => onOpenProject(project)}
-            className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+            onClick={() => {
+              if (isSelectionMode) {
+                onToggleSelect(project.id)
+                return
+              }
+              onOpenProject(project)
+            }}
+            className="flex min-w-0 flex-1 items-start gap-3 text-left"
             title="Open project"
           >
-            Open project
+            <span className="mt-0.5 shrink-0">
+              <PriorityBadge position={index + 1} rank={project.priority_rank} />
+            </span>
+            <span className="text-3xl leading-none">{project.emoji}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h3 className="truncate text-lg font-bold text-slate-900">{project.title}</h3>
+                {isShared && (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                    <Share2 className="w-3 h-3" />
+                    Shared
+                  </span>
+                )}
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                <span>{totalStages} stages</span>
+                <span aria-hidden>·</span>
+                <span>{stats.activeTasks} active</span>
+                <span aria-hidden>·</span>
+                <span>{stats.completedTasks} done</span>
+              </div>
+            </div>
           </button>
+
+          <div className="flex shrink-0 items-start gap-1">
+            {isSelectionMode && (
+              <button
+                type="button"
+                onClick={() => onToggleSelect(project.id)}
+                className={`mt-1 flex h-6 w-6 items-center justify-center rounded-md border text-xs ${isSelected ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-400'}`}
+                title={isSelected ? 'Deselect project' : 'Select project'}
+              >
+                {isSelected ? <Check className="w-3.5 h-3.5" /> : null}
+              </button>
+            )}
+            {!isSelectionMode && (
+              <button
+                type="button"
+                onClick={() => setShowMenu(value => !value)}
+                className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                title="Project actions"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+        {/* Progress bar directly below the project name */}
+        <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full rounded-full bg-gradient-to-r from-slate-300 to-indigo-500" style={{ width: `${Math.max(4, Math.round(stats.projectProgress * 100))}%` }} />
         </div>
-        <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-          <span>{Math.round(stats.projectProgress * 100)}% complete</span>
+        <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
+          <span className="font-medium text-slate-600">{Math.round(stats.projectProgress * 100)}% complete</span>
           <span>{stats.overdueTasks} overdue</span>
         </div>
       </div>
 
-      {/* Show only current stage by default; "View all stages" toggle for the rest */}
-      <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
+      {/* Stage area: current-stage header is merged into the stage panel below */}
+      <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
         {/* Always show the active/current stage */}
         {project.stages?.[activeStageIndex] && (
           <KanbanStagePanel
@@ -3871,6 +3877,7 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
             onOpenTask={onOpenTask}
             onAddToToday={onAddToToday}
             onMoveTask={onMoveTask}
+            onOpenProject={onOpenProject}
           />
         )}
 
