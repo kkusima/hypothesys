@@ -1667,7 +1667,7 @@ function Header({ projects, onSearchNavigate, notifications, onMarkNotificationR
 
   return (
     <>
-      <header className="bg-white/80 backdrop-blur-lg border-b border-gray-200 sticky top-0 z-40">
+      <header className="bg-white/80 backdrop-blur-lg sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16 gap-2 sm:gap-4">
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -1823,7 +1823,7 @@ function Header({ projects, onSearchNavigate, notifications, onMarkNotificationR
 // ============================================
 function TabNav({ tab, setTab }) {
   return (
-    <div className="bg-white/60 backdrop-blur-sm border-b border-gray-200">
+    <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-16 z-30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <nav className="flex gap-1">
           {[
@@ -4827,7 +4827,7 @@ function ProjectDetail() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-16">
       {/* Header */}
-      <div className="bg-white/80 backdrop-blur-lg border-b border-gray-200 sticky top-16 z-30">
+      <div className="bg-white/80 backdrop-blur-lg sticky top-16 z-30">
         <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center gap-2 sm:gap-4">
             <button
@@ -7883,6 +7883,27 @@ function AppContent() {
   const [selectedTask, setSelectedTask] = useState(null)
   const [activeTab, setActiveTab] = useState('projects')
   const [view, setView] = useState('main')
+  // Per-tab navigation memory: remembers where you were in each tab so switching
+  // tabs and coming back restores your place (e.g. the project you had open).
+  const [tabState, setTabState] = useState({})
+
+  const handleTabSelect = (id) => {
+    if (id === activeTab) {
+      // Tapping the tab you're already on returns to that section's list.
+      setSelectedProject(null)
+      setSelectedTask(null)
+      setView('main')
+      setTabState(prev => ({ ...prev, [id]: null }))
+      return
+    }
+    // Save where we are in the current tab, then restore the target tab's place.
+    setTabState(prev => ({ ...prev, [activeTab]: { view, project: selectedProject, task: selectedTask } }))
+    const target = tabState[id]
+    setActiveTab(id)
+    setSelectedProject(target?.project || null)
+    setSelectedTask(target?.task || null)
+    setView(target?.view || 'main')
+  }
   const [loading, setLoading] = useState(true)
   const [notifications, setNotifications] = useState([])
   const notificationsRef = useRef(notifications)
@@ -9408,20 +9429,12 @@ function AppContent() {
           onDeleteMultipleNotifications={handleDeleteMultipleNotifications}
           onClearAllNotifications={handleClearAllNotifications}
           onNotificationNavigate={handleNotificationNavigate}
-          onLogoClick={() => { setView('main'); setSelectedProject(null); setActiveTab('projects') }}
+          onLogoClick={() => { setView('main'); setSelectedProject(null); setSelectedTask(null); setActiveTab('projects'); setTabState({}) }}
           notificationSettings={notificationSettings}
           onUpdateNotificationSettings={updateNotificationSettings}
         />
-        {/* Top tabs stay visible everywhere; selecting one returns to that list. */}
-        <TabNav
-          tab={activeTab}
-          setTab={(id) => {
-            setActiveTab(id)
-            setSelectedProject(null)
-            setSelectedTask(null)
-            setView('main')
-          }}
-        />
+        {/* Top tabs stay visible everywhere; each tab remembers your place. */}
+        <TabNav tab={activeTab} setTab={handleTabSelect} />
         {view === 'main' && (
           activeTab === 'projects' ? <ProjectsView /> : activeTab === 'today' ? <TodayView /> : <AllTasksView />
         )}
