@@ -2612,12 +2612,17 @@ function ProjectsView() {
       const { error, deletedCount } = await db.deleteProject(id)
 
       if (error || deletedCount === 0) {
-        // Delete didn't persist (e.g. missing RLS delete policy, or not the
-        // owner). Stop guarding it and restore the true server state.
+        // Delete didn't persist (e.g. missing RLS delete policy, not the
+        // owner, or a DB constraint/trigger error). Stop guarding it and
+        // restore the true server state.
         deletedProjectIdsRef.current.delete(id)
-        showToast?.(error
-          ? 'Could not delete project. Please try again.'
-          : "Couldn't delete this project — you may not have permission.")
+        if (error) {
+          // Surface the real Postgres error so it can actually be diagnosed.
+          console.error('Project delete failed:', error)
+          showToast?.(`Delete failed: ${error.message || error.code || 'unknown error'}`)
+        } else {
+          showToast?.("Couldn't delete this project — you may not have permission.")
+        }
         reloadProjects?.()
         return
       }

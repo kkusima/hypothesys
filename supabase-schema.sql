@@ -1,8 +1,17 @@
 -- HypotheSys™ Database Schema for Supabase
--- Idempotent version: safe to run multiple times
+-- FULLY IDEMPOTENT: safe to copy-paste and run any number of times.
+-- Every policy is dropped-then-created, every function uses CREATE OR REPLACE,
+-- and every trigger is dropped before being recreated. Running this on a fresh
+-- or an existing database brings it to the correct, working state without errors.
 
--- Enable UUID extension
+-- ============================================================
+-- EXTENSIONS
+-- ============================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- ============================================================
+-- TABLES
+-- ============================================================
 
 -- Users table (extends Supabase auth.users)
 CREATE TABLE IF NOT EXISTS public.users (
@@ -87,31 +96,11 @@ CREATE TABLE IF NOT EXISTS public.comments (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Safe migration for existing tables
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'comments' AND column_name = 'updated_at'
-  ) THEN
-    ALTER TABLE public.comments ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
-  END IF;
-  
-  -- Add email_notifications column if it doesn't exist
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns 
-    WHERE table_name = 'users' AND column_name = 'email_notifications'
-  ) THEN
-    ALTER TABLE public.users ADD COLUMN email_notifications BOOLEAN DEFAULT TRUE;
-  END IF;
-END;
-$$;
-
 -- Notifications table
 CREATE TABLE IF NOT EXISTS public.notifications (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  type TEXT NOT NULL, -- 'task_reminder', 'subtask_reminder', 'project_shared', 'project_invite', 'task_created', 'subtask_created', 'task_reminder_set', 'subtask_reminder_set', 'task_overdue', 'subtask_overdue'
+  type TEXT NOT NULL,
   title TEXT NOT NULL,
   message TEXT,
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
@@ -148,17 +137,6 @@ CREATE TABLE IF NOT EXISTS public.subtask_tags (
   PRIMARY KEY (subtask_id, tag_id)
 );
 
--- Prevent duplicate notifications for the same user and entity/type combination.
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'notifications_unique_per_entity'
-  ) THEN
-    EXECUTE 'ALTER TABLE public.notifications ADD CONSTRAINT notifications_unique_per_entity UNIQUE (user_id, type, task_id, subtask_id)';
-  END IF;
-END;
-$$;
-
 -- Today items table
 CREATE TABLE IF NOT EXISTS public.today_items (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -183,26 +161,11 @@ CREATE TABLE IF NOT EXISTS public.project_invitations (
   UNIQUE(project_id, email)
 );
 
--- Performance Indexes
-CREATE INDEX IF NOT EXISTS idx_projects_owner ON public.projects(owner_id);
-CREATE INDEX IF NOT EXISTS idx_project_members_project ON public.project_members(project_id);
-CREATE INDEX IF NOT EXISTS idx_project_members_user ON public.project_members(user_id);
-CREATE INDEX IF NOT EXISTS idx_stages_project ON public.stages(project_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_stage ON public.tasks(stage_id);
-CREATE INDEX IF NOT EXISTS idx_subtasks_task ON public.subtasks(task_id);
-CREATE INDEX IF NOT EXISTS idx_comments_task ON public.comments(task_id);
-CREATE INDEX IF NOT EXISTS idx_notifications_user ON public.notifications(user_id);
-CREATE INDEX IF NOT EXISTS idx_today_items_user_day ON public.today_items(user_id, day);
-CREATE INDEX IF NOT EXISTS idx_tags_user ON public.tags(user_id);
-CREATE INDEX IF NOT EXISTS idx_task_tags_task ON public.task_tags(task_id);
-CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON public.task_tags(tag_id);
-CREATE INDEX IF NOT EXISTS idx_subtask_tags_subtask ON public.subtask_tags(subtask_id);
-
 -- Notification Settings table (granular per-channel preferences)
 CREATE TABLE IF NOT EXISTS public.notification_settings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL UNIQUE REFERENCES public.users(id) ON DELETE CASCADE,
-  
+
   -- Reminders & Due Dates
   reminder_upcoming_inapp BOOLEAN DEFAULT TRUE,
   reminder_upcoming_email BOOLEAN DEFAULT FALSE,
@@ -210,7 +173,7 @@ CREATE TABLE IF NOT EXISTS public.notification_settings (
   reminder_overdue_inapp BOOLEAN DEFAULT TRUE,
   reminder_overdue_email BOOLEAN DEFAULT FALSE,
   reminder_overdue_push BOOLEAN DEFAULT TRUE,
-  
+
   -- Task Activity
   task_created_inapp BOOLEAN DEFAULT TRUE,
   task_created_email BOOLEAN DEFAULT FALSE,
@@ -224,7 +187,7 @@ CREATE TABLE IF NOT EXISTS public.notification_settings (
   subtask_activity_inapp BOOLEAN DEFAULT FALSE,
   subtask_activity_email BOOLEAN DEFAULT FALSE,
   subtask_activity_push BOOLEAN DEFAULT FALSE,
-  
+
   -- Collaboration
   project_shared_inapp BOOLEAN DEFAULT TRUE,
   project_shared_email BOOLEAN DEFAULT FALSE,
@@ -235,13 +198,60 @@ CREATE TABLE IF NOT EXISTS public.notification_settings (
   comment_added_inapp BOOLEAN DEFAULT TRUE,
   comment_added_email BOOLEAN DEFAULT FALSE,
   comment_added_push BOOLEAN DEFAULT FALSE,
-  
+
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================================
+-- SAFE MIGRATIONS (for databases created with older versions)
+-- ============================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'comments' AND column_name = 'updated_at'
+  ) THEN
+    ALTER TABLE public.comments ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'email_notifications'
+  ) THEN
+    ALTER TABLE public.users ADD COLUMN email_notifications BOOLEAN DEFAULT TRUE;
+  END IF;
+
+  -- Prevent duplicate notifications for the same user/entity/type combination.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'notifications_unique_per_entity'
+  ) THEN
+    EXECUTE 'ALTER TABLE public.notifications ADD CONSTRAINT notifications_unique_per_entity UNIQUE (user_id, type, task_id, subtask_id)';
+  END IF;
+END;
+$$;
+
+-- ============================================================
+-- PERFORMANCE INDEXES
+-- ============================================================
+CREATE INDEX IF NOT EXISTS idx_projects_owner ON public.projects(owner_id);
+CREATE INDEX IF NOT EXISTS idx_project_members_project ON public.project_members(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_members_user ON public.project_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_stages_project ON public.stages(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_stage ON public.tasks(stage_id);
+CREATE INDEX IF NOT EXISTS idx_subtasks_task ON public.subtasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_comments_task ON public.comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON public.notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_today_items_user_day ON public.today_items(user_id, day);
+CREATE INDEX IF NOT EXISTS idx_tags_user ON public.tags(user_id);
+CREATE INDEX IF NOT EXISTS idx_task_tags_task ON public.task_tags(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag ON public.task_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_subtask_tags_subtask ON public.subtask_tags(subtask_id);
 CREATE INDEX IF NOT EXISTS idx_notification_settings_user ON public.notification_settings(user_id);
 
+-- ============================================================
+-- HELPER FUNCTIONS (used by RLS policies)
+-- ============================================================
 CREATE OR REPLACE FUNCTION public.is_project_member(p_project_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -295,6 +305,9 @@ AS $$
     );
 $$;
 
+-- ============================================================
+-- ENABLE ROW LEVEL SECURITY
+-- ============================================================
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.project_members ENABLE ROW LEVEL SECURITY;
@@ -310,16 +323,11 @@ ALTER TABLE public.task_tags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.subtask_tags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notification_settings ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can insert own profile" ON public.users;
-DROP POLICY IF EXISTS "Users can manage own notifications" ON public.notifications;
+-- ============================================================
+-- CLEAN UP LEGACY POLICY NAMES (from older schema versions)
+-- ============================================================
 DROP POLICY IF EXISTS "Users can view owned projects" ON public.projects;
 DROP POLICY IF EXISTS "Users can view shared projects" ON public.projects;
-DROP POLICY IF EXISTS "Owners can insert projects" ON public.projects;
-DROP POLICY IF EXISTS "Owners can update projects" ON public.projects;
-DROP POLICY IF EXISTS "Owners can delete projects" ON public.projects;
-DROP POLICY IF EXISTS "Users can view own membership" ON public.project_members;
 DROP POLICY IF EXISTS "Owners can insert project members" ON public.project_members;
 DROP POLICY IF EXISTS "Owners can update project members" ON public.project_members;
 DROP POLICY IF EXISTS "Owners can delete project members" ON public.project_members;
@@ -327,40 +335,55 @@ DROP POLICY IF EXISTS "Users can manage stages" ON public.stages;
 DROP POLICY IF EXISTS "Users can manage tasks" ON public.tasks;
 DROP POLICY IF EXISTS "Users can manage subtasks" ON public.subtasks;
 DROP POLICY IF EXISTS "Users can manage comments" ON public.comments;
-DROP POLICY IF EXISTS "Users can manage own tags" ON public.tags;
+DROP POLICY IF EXISTS "Users can manage own notifications" ON public.notifications;
 DROP POLICY IF EXISTS "Users can manage task tags" ON public.task_tags;
 DROP POLICY IF EXISTS "Users can manage subtask tags" ON public.subtask_tags;
 
+-- ============================================================
+-- RLS POLICIES (each one drops-then-creates → fully re-runnable)
+-- ============================================================
+
+-- ---- users ----
+DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
 CREATE POLICY "Users can view own profile"
   ON public.users FOR SELECT
   USING (public.can_view_user(id));
 
+DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
 CREATE POLICY "Users can update own profile"
   ON public.users FOR UPDATE
   USING (id = auth.uid())
   WITH CHECK (id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can insert own profile" ON public.users;
 CREATE POLICY "Users can insert own profile"
   ON public.users FOR INSERT
   WITH CHECK (id = auth.uid());
 
+-- ---- projects ----
+DROP POLICY IF EXISTS "Users can view accessible projects" ON public.projects;
 CREATE POLICY "Users can view accessible projects"
   ON public.projects FOR SELECT
   USING (public.is_project_member(id));
 
+DROP POLICY IF EXISTS "Owners can insert projects" ON public.projects;
 CREATE POLICY "Owners can insert projects"
   ON public.projects FOR INSERT
   WITH CHECK (owner_id = auth.uid());
 
+DROP POLICY IF EXISTS "Owners can update projects" ON public.projects;
 CREATE POLICY "Owners can update projects"
   ON public.projects FOR UPDATE
   USING (owner_id = auth.uid())
   WITH CHECK (owner_id = auth.uid());
 
+DROP POLICY IF EXISTS "Owners can delete projects" ON public.projects;
 CREATE POLICY "Owners can delete projects"
   ON public.projects FOR DELETE
   USING (owner_id = auth.uid());
 
+-- ---- project_members ----
+DROP POLICY IF EXISTS "Users can view own membership" ON public.project_members;
 CREATE POLICY "Users can view own membership"
   ON public.project_members FOR SELECT
   USING (
@@ -371,6 +394,7 @@ CREATE POLICY "Users can view own membership"
     )
   );
 
+DROP POLICY IF EXISTS "Users can insert membership or invite themselves" ON public.project_members;
 CREATE POLICY "Users can insert membership or invite themselves"
   ON public.project_members FOR INSERT
   WITH CHECK (
@@ -381,6 +405,7 @@ CREATE POLICY "Users can insert membership or invite themselves"
     )
   );
 
+DROP POLICY IF EXISTS "Users can update own membership or owners can manage members" ON public.project_members;
 CREATE POLICY "Users can update own membership or owners can manage members"
   ON public.project_members FOR UPDATE
   USING (
@@ -398,6 +423,7 @@ CREATE POLICY "Users can update own membership or owners can manage members"
     )
   );
 
+DROP POLICY IF EXISTS "Users can delete own membership or owners can manage members" ON public.project_members;
 CREATE POLICY "Users can delete own membership or owners can manage members"
   ON public.project_members FOR DELETE
   USING (
@@ -408,6 +434,8 @@ CREATE POLICY "Users can delete own membership or owners can manage members"
     )
   );
 
+-- ---- project_invitations ----
+DROP POLICY IF EXISTS "Owners and invitees can view invitations" ON public.project_invitations;
 CREATE POLICY "Owners and invitees can view invitations"
   ON public.project_invitations FOR SELECT
   USING (
@@ -418,6 +446,7 @@ CREATE POLICY "Owners and invitees can view invitations"
     OR lower(email) = lower(coalesce(auth.email(), ''))
   );
 
+DROP POLICY IF EXISTS "Owners can insert invitations" ON public.project_invitations;
 CREATE POLICY "Owners can insert invitations"
   ON public.project_invitations FOR INSERT
   WITH CHECK (
@@ -427,6 +456,7 @@ CREATE POLICY "Owners can insert invitations"
     )
   );
 
+DROP POLICY IF EXISTS "Owners can update invitations" ON public.project_invitations;
 CREATE POLICY "Owners can update invitations"
   ON public.project_invitations FOR UPDATE
   USING (
@@ -442,6 +472,7 @@ CREATE POLICY "Owners can update invitations"
     )
   );
 
+DROP POLICY IF EXISTS "Owners can delete invitations" ON public.project_invitations;
 CREATE POLICY "Owners can delete invitations"
   ON public.project_invitations FOR DELETE
   USING (
@@ -451,23 +482,30 @@ CREATE POLICY "Owners can delete invitations"
     )
   );
 
+-- ---- stages ----
+DROP POLICY IF EXISTS "Users can view stages in accessible projects" ON public.stages;
 CREATE POLICY "Users can view stages in accessible projects"
   ON public.stages FOR SELECT
   USING (public.is_project_member(project_id));
 
+DROP POLICY IF EXISTS "Editors can manage stages" ON public.stages;
 CREATE POLICY "Editors can manage stages"
   ON public.stages FOR INSERT
   WITH CHECK (public.can_edit_project(project_id));
 
+DROP POLICY IF EXISTS "Editors can update stages" ON public.stages;
 CREATE POLICY "Editors can update stages"
   ON public.stages FOR UPDATE
   USING (public.can_edit_project(project_id))
   WITH CHECK (public.can_edit_project(project_id));
 
+DROP POLICY IF EXISTS "Editors can delete stages" ON public.stages;
 CREATE POLICY "Editors can delete stages"
   ON public.stages FOR DELETE
   USING (public.can_edit_project(project_id));
 
+-- ---- tasks ----
+DROP POLICY IF EXISTS "Users can view tasks in accessible projects" ON public.tasks;
 CREATE POLICY "Users can view tasks in accessible projects"
   ON public.tasks FOR SELECT
   USING (
@@ -477,6 +515,7 @@ CREATE POLICY "Users can view tasks in accessible projects"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can insert tasks" ON public.tasks;
 CREATE POLICY "Editors can insert tasks"
   ON public.tasks FOR INSERT
   WITH CHECK (
@@ -486,6 +525,7 @@ CREATE POLICY "Editors can insert tasks"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can update tasks" ON public.tasks;
 CREATE POLICY "Editors can update tasks"
   ON public.tasks FOR UPDATE
   USING (
@@ -501,6 +541,7 @@ CREATE POLICY "Editors can update tasks"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can delete tasks" ON public.tasks;
 CREATE POLICY "Editors can delete tasks"
   ON public.tasks FOR DELETE
   USING (
@@ -510,6 +551,8 @@ CREATE POLICY "Editors can delete tasks"
     )
   );
 
+-- ---- subtasks ----
+DROP POLICY IF EXISTS "Users can view subtasks in accessible projects" ON public.subtasks;
 CREATE POLICY "Users can view subtasks in accessible projects"
   ON public.subtasks FOR SELECT
   USING (
@@ -521,6 +564,7 @@ CREATE POLICY "Users can view subtasks in accessible projects"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can insert subtasks" ON public.subtasks;
 CREATE POLICY "Editors can insert subtasks"
   ON public.subtasks FOR INSERT
   WITH CHECK (
@@ -532,6 +576,7 @@ CREATE POLICY "Editors can insert subtasks"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can update subtasks" ON public.subtasks;
 CREATE POLICY "Editors can update subtasks"
   ON public.subtasks FOR UPDATE
   USING (
@@ -551,6 +596,7 @@ CREATE POLICY "Editors can update subtasks"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can delete subtasks" ON public.subtasks;
 CREATE POLICY "Editors can delete subtasks"
   ON public.subtasks FOR DELETE
   USING (
@@ -562,6 +608,8 @@ CREATE POLICY "Editors can delete subtasks"
     )
   );
 
+-- ---- comments ----
+DROP POLICY IF EXISTS "Users can view comments in accessible projects" ON public.comments;
 CREATE POLICY "Users can view comments in accessible projects"
   ON public.comments FOR SELECT
   USING (
@@ -573,6 +621,7 @@ CREATE POLICY "Users can view comments in accessible projects"
     )
   );
 
+DROP POLICY IF EXISTS "Members can add comments" ON public.comments;
 CREATE POLICY "Members can add comments"
   ON public.comments FOR INSERT
   WITH CHECK (
@@ -585,6 +634,7 @@ CREATE POLICY "Members can add comments"
     )
   );
 
+DROP POLICY IF EXISTS "Comment authors or editors can update comments" ON public.comments;
 CREATE POLICY "Comment authors or editors can update comments"
   ON public.comments FOR UPDATE
   USING (
@@ -606,6 +656,7 @@ CREATE POLICY "Comment authors or editors can update comments"
     )
   );
 
+DROP POLICY IF EXISTS "Comment authors or editors can delete comments" ON public.comments;
 CREATE POLICY "Comment authors or editors can delete comments"
   ON public.comments FOR DELETE
   USING (
@@ -618,23 +669,30 @@ CREATE POLICY "Comment authors or editors can delete comments"
     )
   );
 
+-- ---- tags ----
+DROP POLICY IF EXISTS "Users can view own tags" ON public.tags;
 CREATE POLICY "Users can view own tags"
   ON public.tags FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can manage own tags" ON public.tags;
 CREATE POLICY "Users can manage own tags"
   ON public.tags FOR INSERT
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can update own tags" ON public.tags;
 CREATE POLICY "Users can update own tags"
   ON public.tags FOR UPDATE
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can delete own tags" ON public.tags;
 CREATE POLICY "Users can delete own tags"
   ON public.tags FOR DELETE
   USING (user_id = auth.uid());
 
+-- ---- task_tags ----
+DROP POLICY IF EXISTS "Users can view task tags in accessible projects" ON public.task_tags;
 CREATE POLICY "Users can view task tags in accessible projects"
   ON public.task_tags FOR SELECT
   USING (
@@ -646,6 +704,7 @@ CREATE POLICY "Users can view task tags in accessible projects"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can manage task tags" ON public.task_tags;
 CREATE POLICY "Editors can manage task tags"
   ON public.task_tags FOR INSERT
   WITH CHECK (
@@ -657,6 +716,7 @@ CREATE POLICY "Editors can manage task tags"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can delete task tags" ON public.task_tags;
 CREATE POLICY "Editors can delete task tags"
   ON public.task_tags FOR DELETE
   USING (
@@ -668,6 +728,8 @@ CREATE POLICY "Editors can delete task tags"
     )
   );
 
+-- ---- subtask_tags ----
+DROP POLICY IF EXISTS "Users can view subtask tags in accessible projects" ON public.subtask_tags;
 CREATE POLICY "Users can view subtask tags in accessible projects"
   ON public.subtask_tags FOR SELECT
   USING (
@@ -680,6 +742,7 @@ CREATE POLICY "Users can view subtask tags in accessible projects"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can manage subtask tags" ON public.subtask_tags;
 CREATE POLICY "Editors can manage subtask tags"
   ON public.subtask_tags FOR INSERT
   WITH CHECK (
@@ -692,6 +755,7 @@ CREATE POLICY "Editors can manage subtask tags"
     )
   );
 
+DROP POLICY IF EXISTS "Editors can delete subtask tags" ON public.subtask_tags;
 CREATE POLICY "Editors can delete subtask tags"
   ON public.subtask_tags FOR DELETE
   USING (
@@ -704,10 +768,13 @@ CREATE POLICY "Editors can delete subtask tags"
     )
   );
 
+-- ---- notifications ----
+DROP POLICY IF EXISTS "Users can view notifications for themselves" ON public.notifications;
 CREATE POLICY "Users can view notifications for themselves"
   ON public.notifications FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can insert personal notifications or project members can notify collaborators" ON public.notifications;
 CREATE POLICY "Users can insert personal notifications or project members can notify collaborators"
   ON public.notifications FOR INSERT
   WITH CHECK (
@@ -731,57 +798,73 @@ CREATE POLICY "Users can insert personal notifications or project members can no
     )
   );
 
+DROP POLICY IF EXISTS "Users can update their notifications" ON public.notifications;
 CREATE POLICY "Users can update their notifications"
   ON public.notifications FOR UPDATE
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can delete their notifications" ON public.notifications;
 CREATE POLICY "Users can delete their notifications"
   ON public.notifications FOR DELETE
   USING (user_id = auth.uid());
 
+-- ---- today_items ----
+DROP POLICY IF EXISTS "Users can view their today items" ON public.today_items;
 CREATE POLICY "Users can view their today items"
   ON public.today_items FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can manage their today items" ON public.today_items;
 CREATE POLICY "Users can manage their today items"
   ON public.today_items FOR INSERT
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can update their today items" ON public.today_items;
 CREATE POLICY "Users can update their today items"
   ON public.today_items FOR UPDATE
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can delete their today items" ON public.today_items;
 CREATE POLICY "Users can delete their today items"
   ON public.today_items FOR DELETE
   USING (user_id = auth.uid());
 
+-- ---- notification_settings ----
+DROP POLICY IF EXISTS "Users can view their notification settings" ON public.notification_settings;
 CREATE POLICY "Users can view their notification settings"
   ON public.notification_settings FOR SELECT
   USING (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can manage their notification settings" ON public.notification_settings;
 CREATE POLICY "Users can manage their notification settings"
   ON public.notification_settings FOR INSERT
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can update their notification settings" ON public.notification_settings;
 CREATE POLICY "Users can update their notification settings"
   ON public.notification_settings FOR UPDATE
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
 
+DROP POLICY IF EXISTS "Users can delete their notification settings" ON public.notification_settings;
 CREATE POLICY "Users can delete their notification settings"
   ON public.notification_settings FOR DELETE
   USING (user_id = auth.uid());
 
--- 
+-- ============================================================
 -- TRIGGERS & FUNCTIONS FOR AUTOMATIC TIMESTAMP UPDATES
 --
+-- Both functions wrap their propagating UPDATE in an exception guard so that
+-- deleting a parent (e.g. a whole project) can NEVER fail because of a child's
+-- AFTER DELETE trigger firing mid-cascade. If the parent is already gone, the
+-- update is simply skipped.
+-- ============================================================
 
--- Function to handle project timestamp updates
--- Function: When a Subtask or Comment changes, update the parent Task
+-- When a Subtask or Comment changes, bump the parent Task.
 CREATE OR REPLACE FUNCTION public.handle_task_child_change()
-RETURNS TRIGGER 
+RETURNS TRIGGER
 SECURITY DEFINER
 SET search_path = public
 AS $$
@@ -792,14 +875,14 @@ BEGIN
   IF TG_TABLE_NAME = 'subtasks' THEN
     IF (TG_OP = 'DELETE') THEN
        target_task_id := OLD.task_id;
-       modifier_id := OLD.modified_by; 
+       modifier_id := OLD.modified_by;
     ELSE
        target_task_id := NEW.task_id;
        modifier_id := NEW.modified_by;
     END IF;
   ELSIF TG_TABLE_NAME = 'comments' THEN
     IF (TG_OP = 'DELETE') THEN
-       target_task_id := OLD.task_id; 
+       target_task_id := OLD.task_id;
        modifier_id := OLD.user_id;
     ELSE
        target_task_id := NEW.task_id;
@@ -808,25 +891,30 @@ BEGIN
   END IF;
 
   IF target_task_id IS NOT NULL THEN
-    UPDATE public.tasks 
-    SET updated_at = NOW(), 
-        modified_by = modifier_id
-    WHERE id = target_task_id;
+    BEGIN
+      UPDATE public.tasks
+      SET updated_at = NOW(),
+          modified_by = modifier_id
+      WHERE id = target_task_id;
+    EXCEPTION WHEN OTHERS THEN
+      -- Parent task may be mid-deletion during a cascade; ignore.
+      NULL;
+    END;
   END IF;
 
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to handle project timestamp updates (Only triggered by Tasks now)
+-- When a Task or Stage changes, bump the parent Project.
 CREATE OR REPLACE FUNCTION public.handle_project_updated_at()
-RETURNS TRIGGER 
+RETURNS TRIGGER
 SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
   project_id_val UUID;
-  user_id_val UUID := null; -- Start as null
+  user_id_val UUID := null;
 BEGIN
   IF TG_TABLE_NAME = 'stages' THEN
     IF (TG_OP = 'DELETE') THEN
@@ -837,50 +925,52 @@ BEGIN
   ELSIF TG_TABLE_NAME = 'tasks' THEN
     IF (TG_OP = 'DELETE') THEN
        SELECT project_id INTO project_id_val FROM public.stages WHERE id = OLD.stage_id;
-       user_id_val := OLD.modified_by; 
+       user_id_val := OLD.modified_by;
     ELSE
        SELECT project_id INTO project_id_val FROM public.stages WHERE id = NEW.stage_id;
        user_id_val := NEW.modified_by;
     END IF;
   END IF;
 
-  -- Update Project
   IF project_id_val IS NOT NULL THEN
-    UPDATE public.projects 
-    SET updated_at = NOW(), 
-        modified_by = COALESCE(user_id_val, modified_by)
-    WHERE id = project_id_val;
+    BEGIN
+      UPDATE public.projects
+      SET updated_at = NOW(),
+          modified_by = COALESCE(user_id_val, modified_by)
+      WHERE id = project_id_val;
+    EXCEPTION WHEN OTHERS THEN
+      -- Parent project may be mid-deletion during a cascade; ignore.
+      NULL;
+    END;
   END IF;
 
   RETURN NULL;
 END;
 $$ LANGUAGE plpgsql;
 
--- Drop existing triggers if any to avoid errors
+-- Recreate triggers (drop first so this is re-runnable)
 DROP TRIGGER IF EXISTS on_task_change ON public.tasks;
 DROP TRIGGER IF EXISTS on_subtask_change ON public.subtasks;
 DROP TRIGGER IF EXISTS on_subtask_update_task ON public.subtasks;
 DROP TRIGGER IF EXISTS on_comment_update_task ON public.comments;
+DROP TRIGGER IF EXISTS on_stage_change ON public.stages;
 
--- Create Triggers
 -- 1. Tasks -> Projects
 CREATE TRIGGER on_task_change
   AFTER INSERT OR UPDATE OR DELETE ON public.tasks
   FOR EACH ROW EXECUTE PROCEDURE public.handle_project_updated_at();
 
 -- 1b. Stages -> Projects
-DROP TRIGGER IF EXISTS on_stage_change ON public.stages;
 CREATE TRIGGER on_stage_change
   AFTER INSERT OR UPDATE OR DELETE ON public.stages
   FOR EACH ROW EXECUTE PROCEDURE public.handle_project_updated_at();
 
--- 2. Subtasks -> Tasks (Cascade)
+-- 2. Subtasks -> Tasks
 CREATE TRIGGER on_subtask_update_task
   AFTER INSERT OR UPDATE OR DELETE ON public.subtasks
   FOR EACH ROW EXECUTE PROCEDURE public.handle_task_child_change();
 
--- 3. Comments -> Tasks (Cascade)
+-- 3. Comments -> Tasks
 CREATE TRIGGER on_comment_update_task
   AFTER INSERT OR UPDATE OR DELETE ON public.comments
   FOR EACH ROW EXECUTE PROCEDURE public.handle_task_child_change();
-
