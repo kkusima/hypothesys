@@ -385,6 +385,32 @@ body {
 }
 
 /* ============================================
+   KANBAN HORIZONTAL SCROLLING
+   ============================================ */
+
+.kanban-scroll {
+  cursor: grab;
+  /* Smooth momentum scrolling on touch devices (phones/tablets) */
+  -webkit-overflow-scrolling: touch;
+  /* Allow native horizontal + vertical panning by touch */
+  touch-action: pan-x pan-y;
+  scroll-behavior: smooth;
+}
+
+/* While actively click-dragging to scroll */
+.kanban-scroll--grabbing {
+  cursor: grabbing;
+  scroll-behavior: auto;
+  user-select: none;
+}
+
+.kanban-scroll--grabbing * {
+  /* Prevent text selection / pointer flicker mid-drag */
+  user-select: none;
+  cursor: grabbing !important;
+}
+
+/* ============================================
    DRAG AND DROP STYLING
    ============================================ */
 

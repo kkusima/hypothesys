@@ -2403,7 +2403,7 @@ function DuplicatePopup() {
 }
 
 function ProjectsView() {
-  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages } = useApp()
+  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages, deletedProjectIdsRef } = useApp()
   const { user, demoMode } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
   const [sortOption, setSortOption] = useState('priority')
@@ -2601,12 +2601,18 @@ function ProjectsView() {
   const deleteProject = async (id) => {
     if (!window.confirm('Delete this project and all its data?')) return
 
+    // Guard: mark as deleted so realtime handler won't resurrect it
+    deletedProjectIdsRef.current.add(id)
+
     if (demoMode) {
       setProjects(projects.filter(p => p.id !== id))
     } else {
-      await db.deleteProject(id)
       setProjects(projects.filter(p => p.id !== id))
+      await db.deleteProject(id)
     }
+
+    // Cleanup guard after propagation delay
+    setTimeout(() => deletedProjectIdsRef.current.delete(id), 8000)
   }
 
   const duplicateProject = async (projectToDuplicate) => {
@@ -2849,7 +2855,7 @@ function ProjectsView() {
           </button>
         </div>
       ) : viewMode === 'kanban' ? (
-        <div className="overflow-x-auto pb-4">
+        <KanbanScrollContainer>
           <div className="flex min-w-max items-stretch gap-4 pr-2">
             {sortedProjects.map((project, i) => (
               <KanbanProjectLane
@@ -2868,7 +2874,7 @@ function ProjectsView() {
               />
             ))}
           </div>
-        </div>
+        </KanbanScrollContainer>
       ) : viewMode === 'grid' ? (
         <div className="grid gap-2 sm:gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           {sortedProjects.map((project, i) => (
@@ -3330,7 +3336,7 @@ function ProjectListItem({ project, index, onSelect, onDelete, onDuplicate, isSe
         )}
 
 
-      {/* Priority Badge */}
+        {/* Priority Badge */}
         <PriorityBadge position={index + 1} rank={project.priority_rank} />
 
         {/* Emoji */}
@@ -3458,6 +3464,75 @@ function ProjectListItem({ project, index, onSelect, onDelete, onDuplicate, isSe
   )
 }
 
+// ============================================
+// KANBAN SCROLL CONTAINER — click-and-drag horizontal scroll
+// ============================================
+function KanbanScrollContainer({ children }) {
+  const containerRef = useRef(null)
+  const isPointerDown = useRef(false)
+  const isDragging = useRef(false)
+  const startX = useRef(0)
+  const scrollLeft = useRef(0)
+
+  // Touch (phone/tablet) uses the browser's native momentum scrolling — we only
+  // wire up custom click-drag for mouse so the lane can be grabbed anywhere.
+  const onMouseDown = (e) => {
+    // Only left button; let text fields and the draggable task cards keep their
+    // own behavior (typing, native drag-to-move-between-stages).
+    if (e.button !== 0) return
+    if (e.target.closest('input, textarea, select, [contenteditable="true"], [draggable="true"]')) return
+    isPointerDown.current = true
+    isDragging.current = false
+    startX.current = e.pageX - containerRef.current.offsetLeft
+    scrollLeft.current = containerRef.current.scrollLeft
+  }
+
+  const onMouseMove = (e) => {
+    if (!isPointerDown.current) return
+    const x = e.pageX - containerRef.current.offsetLeft
+    const walk = (x - startX.current) * 1.5 // scroll speed multiplier
+    // Only start treating it as a drag once the pointer moves past a small
+    // threshold, so plain clicks on headers/buttons still register.
+    if (!isDragging.current && Math.abs(walk) > 5) {
+      isDragging.current = true
+      containerRef.current.classList.add('kanban-scroll--grabbing')
+    }
+    if (isDragging.current) {
+      e.preventDefault()
+      containerRef.current.scrollLeft = scrollLeft.current - walk
+    }
+  }
+
+  const endDrag = () => {
+    isPointerDown.current = false
+    containerRef.current?.classList.remove('kanban-scroll--grabbing')
+  }
+
+  // Swallow the click that fires right after a drag so grabbing a header/button
+  // to scroll doesn't also trigger that button's action.
+  const onClickCapture = (e) => {
+    if (isDragging.current) {
+      e.preventDefault()
+      e.stopPropagation()
+      isDragging.current = false
+    }
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="kanban-scroll overflow-x-auto pb-4"
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={endDrag}
+      onMouseLeave={endDrag}
+      onClickCapture={onClickCapture}
+    >
+      {children}
+    </div>
+  )
+}
+
 function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday }) {
   const taskOverdue = isOverdue(task.reminder_date) && !task.is_completed
   const visibleTags = task.tags || []
@@ -3479,6 +3554,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
         }
       }}
       className={`group rounded-2xl border bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500/30 ${taskOverdue ? 'border-red-200 bg-red-50/70' : 'border-slate-200'}`}
+      title="Click to open task"
     >
       <div className="flex items-start gap-3">
         <div className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${task.is_completed ? 'bg-emerald-100 text-emerald-600' : taskOverdue ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-500'}`}>
@@ -3497,6 +3573,7 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
                 onOpenTask(project, task, stageIndex)
               }}
               className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+              title="Open task"
             >
               Open
             </button>
@@ -3589,6 +3666,7 @@ function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, on
         type="button"
         onClick={() => setIsExpanded(value => !value)}
         className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors ${isExpanded ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/70'}`}
+        title={isExpanded ? 'Collapse stage' : 'Expand stage'}
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -3597,11 +3675,10 @@ function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, on
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
             <span>{activeTasks.length} active</span>
-            <span>{completedTasks.length} completed</span>
+            <span>{completedTasks.length} done</span>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 text-slate-400">
-          <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-500">{isExpanded ? 'Collapse' : 'Expand'}</span>
+        <div className="flex shrink-0 items-center text-slate-400" title={isExpanded ? 'Collapse' : 'Expand'}>
           {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
         </div>
       </button>
@@ -3635,33 +3712,35 @@ function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, on
             )}
           </div>
 
-          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80">
-            <button
-              type="button"
-              onClick={() => setShowCompleted(value => !value)}
-              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-slate-700">Completed tasks</div>
-                <div className="mt-0.5 text-[11px] text-slate-500">{completedTasks.length} collapsed</div>
-              </div>
-              {showCompleted ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
-            </button>
-            {showCompleted && completedTasks.length > 0 && (
-              <div className="space-y-2 border-t border-slate-200 px-3 py-3">
-                {completedTasks.map(task => (
-                  <KanbanTaskCard
-                    key={task.id}
-                    project={project}
-                    stageIndex={stageIndex}
-                    task={task}
-                    onOpenTask={onOpenTask}
-                    onAddToToday={onAddToToday}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          {completedTasks.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80">
+              <button
+                type="button"
+                onClick={() => setShowCompleted(value => !value)}
+                className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left"
+                title={showCompleted ? 'Hide completed tasks' : 'Show completed tasks'}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-slate-500">{completedTasks.length} completed</span>
+                </div>
+                {showCompleted ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}
+              </button>
+              {showCompleted && (
+                <div className="space-y-2 border-t border-slate-200 px-3 py-3">
+                  {completedTasks.map(task => (
+                    <KanbanTaskCard
+                      key={task.id}
+                      project={project}
+                      stageIndex={stageIndex}
+                      task={task}
+                      onOpenTask={onOpenTask}
+                      onAddToToday={onAddToToday}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -3671,9 +3750,11 @@ function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, on
 function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onToggleSelect, onOpenProject, onOpenTask, onDelete, onDuplicate, onAddToToday, onMoveTask }) {
   const { user } = useAuth()
   const [showMenu, setShowMenu] = useState(false)
+  const [showAllStages, setShowAllStages] = useState(false)
 
   const activeStageIndex = project.stages?.length ? Math.min(project.current_stage_index || 0, project.stages.length - 1) : 0
   const activeStageName = project.stages?.[activeStageIndex]?.name || 'No stage'
+  const totalStages = project.stages?.length || 0
 
   const stats = useMemo(() => {
     const stages = project.stages || []
@@ -3704,6 +3785,7 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
             onOpenProject(project)
           }}
           className="flex min-w-0 flex-1 items-start gap-3 text-left"
+          title="Open project"
         >
           <span className="text-3xl">{project.emoji}</span>
           <div className="min-w-0 flex-1">
@@ -3717,7 +3799,7 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
               )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-              <span>{project.stages?.length || 0} stages</span>
+              <span>{totalStages} stages</span>
               <span>{stats.activeTasks} active</span>
               <span>{stats.completedTasks} done</span>
             </div>
@@ -3748,7 +3830,10 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
         </div>
       </div>
 
-      <div className="mt-3 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
+      {/* Divider between project title and stage info */}
+      <div className="my-2 mx-2 h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent" />
+
+      <div className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Current stage</div>
@@ -3758,6 +3843,7 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
             type="button"
             onClick={() => onOpenProject(project)}
             className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+            title="Open project"
           >
             Open project
           </button>
@@ -3772,19 +3858,54 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
         </div>
       </div>
 
+      {/* Show only current stage by default; "View all stages" toggle for the rest */}
       <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
-        {(project.stages || []).map((stage, stageIndex) => (
+        {/* Always show the active/current stage */}
+        {project.stages?.[activeStageIndex] && (
           <KanbanStagePanel
-            key={stage.id}
+            key={project.stages[activeStageIndex].id}
             project={project}
-            stage={stage}
-            stageIndex={stageIndex}
-            isActive={stageIndex === activeStageIndex}
+            stage={project.stages[activeStageIndex]}
+            stageIndex={activeStageIndex}
+            isActive={true}
             onOpenTask={onOpenTask}
             onAddToToday={onAddToToday}
             onMoveTask={onMoveTask}
           />
-        ))}
+        )}
+
+        {/* Other stages, toggled */}
+        {showAllStages && (project.stages || []).map((stage, stageIndex) => {
+          if (stageIndex === activeStageIndex) return null
+          return (
+            <KanbanStagePanel
+              key={stage.id}
+              project={project}
+              stage={stage}
+              stageIndex={stageIndex}
+              isActive={false}
+              onOpenTask={onOpenTask}
+              onAddToToday={onAddToToday}
+              onMoveTask={onMoveTask}
+            />
+          )
+        })}
+
+        {/* Toggle to show/hide other stages */}
+        {totalStages > 1 && (
+          <button
+            type="button"
+            onClick={() => setShowAllStages(v => !v)}
+            className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+            title={showAllStages ? 'Show only current stage' : `View all ${totalStages} stages`}
+          >
+            {showAllStages ? (
+              <><ChevronUp className="w-3.5 h-3.5" /> Show less</>
+            ) : (
+              <><ChevronDown className="w-3.5 h-3.5" /> View all {totalStages} stages</>
+            )}
+          </button>
+        )}
       </div>
 
       {showMenu && !isSelectionMode && (
@@ -4066,7 +4187,7 @@ function CreateProjectModal({ onClose }) {
 // PROJECT DETAIL VIEW
 // ============================================
 function ProjectDetail() {
-  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks } = useApp()
+  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef } = useApp()
   const { demoMode, user } = useAuth()
   const currentUserName = user?.user_metadata?.name || user?.email || 'Unknown'
   const [previewIndex, setPreviewIndex] = useState(null)
@@ -4285,6 +4406,9 @@ function ProjectDetail() {
   }
 
   const deleteTask = async (taskId) => {
+    // Guard: mark as deleted so realtime handler won't resurrect it
+    deletedTaskIdsRef.current.add(taskId)
+
     const updated = {
       ...project,
       stages: project.stages.map((s, i) =>
@@ -4305,6 +4429,9 @@ function ProjectDetail() {
       }
       await db.deleteTask(taskId)
     }
+
+    // Cleanup guard after propagation delay
+    setTimeout(() => deletedTaskIdsRef.current.delete(taskId), 8000)
   }
 
   const updateTaskReminder = async (taskId, reminderDate, scope = 'all') => {
@@ -5502,7 +5629,7 @@ function TaskDetail() {
   const {
     projects, setProjects, selectedProject, setSelectedProject, selectedTask, setSelectedTask, setView, addToToday, addSubtaskToToday,
     tags, activeTagPicker, setActiveTagPicker, assignTag, unassignTag, createTag, editTag, deleteTag, reorderSubtasks,
-    showToast
+    showToast, deletedTaskIdsRef
   } = useApp()
   const { demoMode, user } = useAuth()
   const [newSubtask, setNewSubtask] = useState('')
@@ -5926,6 +6053,10 @@ function TaskDetail() {
 
   const deleteTask = async () => {
     if (!window.confirm('Delete this task?')) return
+
+    // Guard: mark as deleted so realtime handler won't resurrect it
+    deletedTaskIdsRef.current.add(task.id)
+
     const now = new Date().toISOString()
     const updated = {
       ...project,
@@ -5942,6 +6073,9 @@ function TaskDetail() {
     if (!demoMode) await db.deleteTask(task.id)
     setSelectedTask(null)
     setView('project')
+
+    // Cleanup guard after propagation delay
+    setTimeout(() => deletedTaskIdsRef.current.delete(task.id), 8000)
   }
 
   // Sort subtasks: overdue first
@@ -6240,46 +6374,47 @@ function TaskDetail() {
           </div>
 
           <div className="space-y-2 mb-4">
-            {sortedSubtasks.map((s, idx) => {
-              const subtaskOverdue = isOverdue(s.reminder_date) && !s.is_completed
-              const isSelected = selectedSubtaskIds.has(s.id)
-              return (
-                <div
-                  key={s.id}
-                  draggable="true"
-                  onDragStart={(e) => onSubtaskDragStart(e, idx)}
-                  onDragOver={onSubtaskDragOver}
-                  onDrop={(e) => onSubtaskDrop(e, idx)}
-                  className={`flex items-center gap-2 sm:gap-3 p-3 rounded-lg transition-colors relative group ${subtaskOverdue ? 'bg-red-50 border-l-2 border-l-red-400' : 'bg-gray-50'
-                    } ${isSelected ? 'ring-2 ring-brand-500 bg-brand-50' : ''}`}
-                >
-                  <div className="absolute left-0 opacity-0 group-hover:opacity-40 p-1 text-gray-400 cursor-grab active:cursor-grabbing">
-                    <GripVertical className="w-3.5 h-3.5" />
-                  </div>
-                  {isSubtaskSelectionMode ? (
-                    <button
-                      onClick={(e) => toggleSubtaskSelection(s.id, e)}
-                      className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${isSelected
-                        ? 'bg-brand-600 border-brand-600 text-white'
-                        : 'border-gray-300 hover:border-gray-400'
-                        }`}
-                    >
-                      {isSelected && <Check className="w-3 h-3" />}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => toggleSubtask(s.id)}
-                      className={`checkbox-custom flex-shrink-0 ${s.is_completed ? 'checked' : ''}`}
-                      style={{ width: 20, height: 20 }}
-                    >
-                      {s.is_completed && <Check className="w-3 h-3" />}
-                    </button>
-                  )}
-                  <div className="flex-1 min-w-0 group">
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1 mr-2">
+              {sortedSubtasks.map((s, idx) => {
+                const subtaskOverdue = isOverdue(s.reminder_date) && !s.is_completed
+                const isSelected = selectedSubtaskIds.has(s.id)
+                return (
+                  <div
+                    key={s.id}
+                    draggable="true"
+                    onDragStart={(e) => onSubtaskDragStart(e, idx)}
+                    onDragOver={onSubtaskDragOver}
+                    onDrop={(e) => onSubtaskDrop(e, idx)}
+                    className={`p-3 rounded-lg transition-colors relative group ${subtaskOverdue ? 'bg-red-50 border-l-2 border-l-red-400' : 'bg-gray-50'
+                      } ${isSelected ? 'ring-2 ring-brand-500 bg-brand-50' : ''}`}
+                  >
+                    <div className="absolute left-0 top-3 opacity-0 group-hover:opacity-40 p-1 text-gray-400 cursor-grab active:cursor-grabbing">
+                      <GripVertical className="w-3.5 h-3.5" />
+                    </div>
+
+                    {/* Row 1: Checkbox + Title */}
+                    <div className="flex items-start gap-2 sm:gap-3">
+                      {isSubtaskSelectionMode ? (
+                        <button
+                          onClick={(e) => toggleSubtaskSelection(s.id, e)}
+                          className={`w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors mt-0.5 ${isSelected
+                            ? 'bg-brand-600 border-brand-600 text-white'
+                            : 'border-gray-300 hover:border-gray-400'
+                            }`}
+                        >
+                          {isSelected && <Check className="w-3 h-3" />}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => toggleSubtask(s.id)}
+                          className={`checkbox-custom flex-shrink-0 mt-0.5 ${s.is_completed ? 'checked' : ''}`}
+                          style={{ width: 20, height: 20 }}
+                        >
+                          {s.is_completed && <Check className="w-3 h-3" />}
+                        </button>
+                      )}
+                      <div className="min-w-0 flex-1">
                         {editingSubtaskId === s.id ? (
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                             <input
                               type="text"
                               value={editingSubtaskTitle}
@@ -6292,17 +6427,19 @@ function TaskDetail() {
                               autoFocus
                               onClick={e => e.stopPropagation()}
                             />
-                            <button onClick={() => updateSubtaskTitle(s.id, editingSubtaskTitle)} className="text-xs font-medium text-blue-600 hover:text-blue-700">Save</button>
-                            <button onClick={() => setEditingSubtaskId(null)} className="text-xs text-gray-500 hover:text-gray-700">Cancel</button>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <button onClick={() => updateSubtaskTitle(s.id, editingSubtaskTitle)} className="text-xs font-medium text-blue-600 hover:text-blue-700 px-2 py-1 rounded hover:bg-blue-50">Save</button>
+                              <button onClick={() => setEditingSubtaskId(null)} className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100">Cancel</button>
+                            </div>
                           </div>
                         ) : (
-                          <div className="flex items-center gap-2">
-                            <span className={`text-sm ${s.is_completed ? 'line-through text-gray-400' : subtaskOverdue ? 'text-red-700' : 'text-gray-700'}`}>
+                          <div>
+                            <span className={`text-sm break-words ${s.is_completed ? 'line-through text-gray-400' : subtaskOverdue ? 'text-red-700' : 'text-gray-700'}`} title={s.title}>
                               {s.title}
                             </span>
                             {/* Subtask Tag Pills */}
                             {s.tags?.length > 0 && (
-                              <div className="flex flex-wrap gap-1">
+                              <div className="flex flex-wrap gap-1 mt-1">
                                 {s.tags.map(tag => {
                                   const colorMap = {
                                     blue: 'bg-blue-100 text-blue-700',
@@ -6326,116 +6463,116 @@ function TaskDetail() {
                           </div>
                         )}
                       </div>
+                    </div>
 
-                      {/* Action buttons for subtasks - Moved to right side of row */}
-                      {!isSubtaskSelectionMode && editingSubtaskId !== s.id && (
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {/* Add to Today Sun Icon */}
+                    {/* Row 2: Action buttons — always accessible, separate from title */}
+                    {!isSubtaskSelectionMode && editingSubtaskId !== s.id && (
+                      <div className="flex items-center gap-1.5 mt-2 ml-7 sm:ml-8">
+                        {/* Add to Today Sun Icon */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            const proj = projects?.find(p => p.id === task.project_id)
+                            addSubtaskToToday(s, task, { projectId: proj?.id })
+                          }}
+                          className="p-1 text-gray-400 hover:text-amber-500 rounded hover:bg-amber-50"
+                          title="Add to Tod(o)ay"
+                        >
+                          <Sun className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Tag Button */}
+                        <div className="relative">
                           <button
                             onClick={(e) => {
                               e.stopPropagation()
-                              const proj = projects?.find(p => p.id === task.project_id)
-                              addSubtaskToToday(s, task, { projectId: proj?.id })
+                              if (activeTagPicker?.subtaskId === s.id) {
+                                setActiveTagPicker(null)
+                              } else {
+                                const rect = e.currentTarget.getBoundingClientRect()
+                                setActiveTagPicker({
+                                  taskId: task.id,
+                                  subtaskId: s.id,
+                                  position: { top: rect.bottom + 8, right: window.innerWidth - rect.right }
+                                })
+                              }
                             }}
-                            className="p-1 text-gray-400 hover:text-amber-500 rounded hover:bg-amber-50"
-                            title="Add to Tod(o)ay"
+                            className={`p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100 ${activeTagPicker?.subtaskId === s.id ? 'bg-gray-100 text-gray-900' : ''}`}
+                            title="Tags"
                           >
-                            <Sun className="w-3.5 h-3.5" />
+                            <Tag className="w-3.5 h-3.5" />
                           </button>
+                          {activeTagPicker?.subtaskId === s.id && (
+                            <TagPicker
+                              tags={tags}
+                              assignedTagIds={new Set((s.tags || []).map(t => t.id))}
+                              onAssign={(tagId) => assignTag(task.id, tagId, s.id)}
+                              onUnassign={(tagId) => unassignTag(task.id, tagId, s.id)}
+                              onCreate={createTag}
+                              onEdit={editTag}
+                              onDelete={deleteTag}
+                              onClose={() => setActiveTagPicker(null)}
+                              position={activeTagPicker.position}
+                            />
+                          )}
+                        </div>
 
-                          {/* Tag Button */}
-                          <div className="relative">
+                        {/* Reminder */}
+                        <ReminderPicker
+                          value={s.reminder_date}
+                          onChange={(date, scope) => updateSubtaskReminder(s.id, date, scope)}
+                          compact
+                          isShared={isShared}
+                        />
+
+                        {/* Edit/Delete */}
+                        {!s.is_completed && (
+                          <div className="flex items-center gap-1 border-l border-gray-200 ml-1 pl-1">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation()
-                                if (activeTagPicker?.subtaskId === s.id) {
-                                  setActiveTagPicker(null)
-                                } else {
-                                  const rect = e.currentTarget.getBoundingClientRect()
-                                  setActiveTagPicker({
-                                    taskId: task.id,
-                                    subtaskId: s.id,
-                                    position: { top: rect.bottom + 8, right: window.innerWidth - rect.right }
-                                  })
-                                }
+                                setEditingSubtaskId(s.id)
+                                setEditingSubtaskTitle(s.title)
                               }}
-                              className={`p-1 text-gray-400 hover:text-gray-600 rounded hover:bg-gray-100 ${activeTagPicker?.subtaskId === s.id ? 'bg-gray-100 text-gray-900' : ''}`}
-                              title="Tags"
+                              className="p-1 text-gray-400 hover:text-blue-500 rounded hover:bg-blue-50"
+                              title="Edit subtask"
                             >
-                              <Tag className="w-3.5 h-3.5" />
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
                             </button>
-                            {activeTagPicker?.subtaskId === s.id && (
-                              <TagPicker
-                                tags={tags}
-                                assignedTagIds={new Set((s.tags || []).map(t => t.id))}
-                                onAssign={(tagId) => assignTag(task.id, tagId, s.id)}
-                                onUnassign={(tagId) => unassignTag(task.id, tagId, s.id)}
-                                onCreate={createTag}
-                                onEdit={editTag}
-                                onDelete={deleteTag}
-                                onClose={() => setActiveTagPicker(null)}
-                                position={activeTagPicker.position}
-                              />
-                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteSubtask(s.id)
+                              }}
+                              className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50"
+                              title="Delete subtask"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
+                        )}
+                      </div>
+                    )}
 
-                          {/* Reminder */}
-                          <ReminderPicker
-                            value={s.reminder_date}
-                            onChange={(date, scope) => updateSubtaskReminder(s.id, date, scope)}
-                            compact
-                            isShared={isShared}
-                          />
-
-                          {/* Edit/Delete - Hidden on completed, shown on hover for active */}
-                          {!s.is_completed && (
-                            <div className="hidden group-hover:flex items-center gap-1 border-l border-gray-200 ml-1 pl-1">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  setEditingSubtaskId(s.id)
-                                  setEditingSubtaskTitle(s.title)
-                                }}
-                                className="p-1 text-gray-400 hover:text-blue-500 rounded hover:bg-blue-50"
-                                title="Edit"
-                              >
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  deleteSubtask(s.id)
-                                }}
-                                className="p-1 text-gray-400 hover:text-red-500 rounded hover:bg-red-50"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                    {/* Timestamp & Attribution Row */}
+                    <div className="text-xs text-gray-400 mt-1 ml-7 sm:ml-8 flex flex-wrap items-center gap-2">
+                      {s.created_at && (
+                        <span title={new Date(s.created_at).toLocaleString()}>
+                          {formatRelativeDate(s.created_at)}
+                          {isShared && s.created_by_name && ` by ${s.created_by === user?.id ? 'you' : s.created_by_name}`}
+                        </span>
+                      )}
+                      {s.updated_at && (new Date(s.updated_at).getTime() > new Date(s.created_at).getTime() + 1000) && (
+                        <span className="italic text-gray-300">
+                          • Edited {formatRelativeDate(s.updated_at)}
+                          {isShared && s.modified_by_name && ` by ${s.modified_by === user?.id ? 'you' : s.modified_by_name}`}
+                        </span>
                       )}
                     </div>
                   </div>
-                  {/* Timestamp & Attribution Row (Styled like comments) */}
-                  <div className="text-xs text-gray-400 mt-1 flex flex-wrap items-center gap-2">
-                    {s.created_at && (
-                      <span title={new Date(s.created_at).toLocaleString()}>
-                        {formatRelativeDate(s.created_at)}
-                        {isShared && s.created_by_name && ` by ${s.created_by === user?.id ? 'you' : s.created_by_name}`}
-                      </span>
-                    )}
-                    {s.updated_at && (new Date(s.updated_at).getTime() > new Date(s.created_at).getTime() + 1000) && (
-                      <span className="italic text-gray-300">
-                        • Edited {formatRelativeDate(s.updated_at)}
-                        {isShared && s.modified_by_name && ` by ${s.modified_by === user?.id ? 'you' : s.modified_by_name}`}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
 
         </div>
 
@@ -6538,16 +6675,16 @@ function TaskDetail() {
               <button onClick={addComment} className="btn-gradient px-4 py-1.5 text-sm rounded-lg opacity-90 hover:opacity-100 transition-opacity">Post</button>
             </div>
           </div>
-        </div>
+        </div >
 
-        {/* Delete */}
-        <button
-          onClick={deleteTask}
-          className="w-full py-3 bg-red-50 text-red-600 font-semibold rounded-xl hover:bg-red-100 transition-colors"
-        >
-          Delete Task
-        </button>
-      </div>
+    {/* Delete */ }
+    < button
+  onClick = { deleteTask }
+  className = "w-full py-3 bg-red-50 text-red-600 font-semibold rounded-xl hover:bg-red-100 transition-colors"
+    >
+    Delete Task
+        </button >
+      </div >
     </div >
   )
 }
@@ -6556,7 +6693,7 @@ function TaskDetail() {
 // ALL TASKS VIEW
 // ============================================
 function AllTasksView() {
-  const { projects, setProjects, setSelectedProject, setSelectedTask, setView, tags, assignTag, unassignTag, createTag, editTag, deleteTag } = useApp()
+  const { projects, setProjects, setSelectedProject, setSelectedTask, setView, tags, assignTag, unassignTag, createTag, editTag, deleteTag, deletedTaskIdsRef } = useApp()
   const { demoMode, user } = useAuth()
   const [activeSubTab, setActiveSubTab] = useState('active') // 'active', 'scheduled', 'complete', 'all'
   const [sortOption, setSortOption] = useState('priority')
@@ -6785,6 +6922,11 @@ function AllTasksView() {
     if (selectedTaskIds.size === 0) return
     if (!window.confirm(`Delete ${selectedTaskIds.size} task(s)?`)) return
 
+    // Guard: mark all as deleted so realtime handler won't resurrect them
+    for (const taskId of selectedTaskIds) {
+      deletedTaskIdsRef.current.add(taskId)
+    }
+
     // Delete each selected task
     const newProjects = projects.map(project => ({
       ...project,
@@ -6802,6 +6944,13 @@ function AllTasksView() {
         await db.deleteTask(taskId)
       }
     }
+
+    // Cleanup guards after propagation delay
+    setTimeout(() => {
+      for (const taskId of selectedTaskIds) {
+        deletedTaskIdsRef.current.delete(taskId)
+      }
+    }, 8000)
 
     setSelectedTaskIds(new Set())
     setIsSelectionMode(false)
@@ -7430,6 +7579,8 @@ function AppContent() {
   const notificationsRef = useRef(notifications)
   const notifiedOverdueRef = useRef(new Set())
   const dismissedNotificationsRef = useRef(new Set()) // Tracks cleared/deleted notification keys to prevent regeneration
+  const deletedProjectIdsRef = useRef(new Set()) // Guard: prevents realtime from resurrecting deleted projects
+  const deletedTaskIdsRef = useRef(new Set()) // Guard: prevents realtime from resurrecting deleted tasks
   const [notificationSettings, setNotificationSettings] = useState({}) // Granular notification preferences
   const [walkVisible, setWalkVisible] = useState(false)
   // Today / focus state (persisted per user, not per-day)
@@ -8753,7 +8904,17 @@ function AppContent() {
         dlog('🔄 Reloading projects due to realtime change...')
         const { data, error } = await db.getProjects(user.id)
         if (!error && data) {
-          setProjects(data)
+          // Filter out recently-deleted projects and tasks to prevent resurrection
+          const filtered = data
+            .filter(p => !deletedProjectIdsRef.current.has(p.id))
+            .map(p => ({
+              ...p,
+              stages: (p.stages || []).map(s => ({
+                ...s,
+                tasks: (s.tasks || []).filter(t => !deletedTaskIdsRef.current.has(t.id))
+              }))
+            }))
+          setProjects(filtered)
         }
         // Also reload notifications and today items
         loadNotifications()
@@ -8870,7 +9031,10 @@ function AppContent() {
     demoMode,
     tags, createTag, editTag, deleteTag, assignTag, unassignTag,
     activeTagPicker, setActiveTagPicker,
-    duplicateCheck, setDuplicateCheck, handleDuplicateAction
+    duplicateCheck, setDuplicateCheck, handleDuplicateAction,
+    // Deletion guards: shared so child delete handlers can mark items
+    // as deleted and the realtime listener won't resurrect them.
+    deletedProjectIdsRef, deletedTaskIdsRef
   }
 
 
