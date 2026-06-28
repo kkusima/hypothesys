@@ -158,6 +158,33 @@ const saveLocal = (data) => {
   } catch { }
 }
 
+// Return just the first sentence of a description, with a trailing ellipsis when
+// the text continues. The sentence terminator must be followed by whitespace or
+// the end of string, so periods inside URLs/abbreviations (e.g. "a.b.com") don't
+// cause an early cut. Falls back to a length cap for sentences with no period.
+const firstSentence = (text, maxLen = 120) => {
+  if (!text) return ''
+  const full = text.trim().replace(/\s+/g, ' ')
+  const match = full.match(/^.*?[.!?](?=\s|$)/)
+  let sentence = match ? match[0] : full
+  if (sentence.length > maxLen) sentence = sentence.slice(0, maxLen).trim()
+  if (sentence.length < full.length) {
+    return sentence.replace(/[.!?]+$/, '') + '…'
+  }
+  return sentence
+}
+
+// A short teaser: roughly the first half of the first sentence, always followed
+// by an ellipsis. Used for compact previews (e.g. the All-Tasks list).
+const halfSentence = (text, maxLen = 60) => {
+  if (!text) return ''
+  const sentence = firstSentence(text, 200).replace(/…$/, '')
+  const words = sentence.split(' ')
+  let half = words.slice(0, Math.max(1, Math.ceil(words.length / 2))).join(' ')
+  if (half.length > maxLen) half = half.slice(0, maxLen).trim()
+  return half.replace(/[.!?,;:]+$/, '') + '…'
+}
+
 // Rebuild a previously-deleted project (with its stages, tasks, subtasks and
 // tag links) back into the database, preserving the original IDs so that other
 // references (e.g. Tod(o)ay items) remain valid. Used by Undo.
@@ -3712,8 +3739,8 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
           </div>
 
           {task.description && (
-            <p className="mt-1 break-words text-sm leading-5 text-slate-500">
-              {task.description}
+            <p className="mt-1 break-words text-sm leading-5 text-slate-500" title={task.description}>
+              {firstSentence(task.description)}
             </p>
           )}
 
@@ -7591,6 +7618,11 @@ function AllTasksView() {
                         {isCompleted && <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />}
                         <span className={`font-medium text-sm sm:text-base truncate ${isCompleted ? 'line-through text-gray-500' : taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>{task.title}</span>
                       </div>
+                      {task.description?.trim() && (
+                        <p className="text-xs text-gray-500 truncate mt-0.5" title={task.description}>
+                          {halfSentence(task.description)}
+                        </p>
+                      )}
                       <div className="flex items-center gap-1.5 sm:gap-2 mt-0.5 sm:mt-1 flex-wrap">
                         <span className="flex items-center gap-1">
                           <PriorityBadge rank={project.priority_rank} />

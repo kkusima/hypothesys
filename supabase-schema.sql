@@ -974,3 +974,41 @@ CREATE TRIGGER on_subtask_update_task
 CREATE TRIGGER on_comment_update_task
   AFTER INSERT OR UPDATE OR DELETE ON public.comments
   FOR EACH ROW EXECUTE PROCEDURE public.handle_task_child_change();
+
+-- ============================================================
+-- HARDEN SECURITY DEFINER FUNCTIONS (Security Advisor warnings)
+--
+-- By default Postgres grants EXECUTE on every function to PUBLIC, so any role
+-- (incl. anon) can call our SECURITY DEFINER functions directly. Lock that down:
+--   1) Revoke EXECUTE on ALL public SECURITY DEFINER functions from
+--      PUBLIC / anon / authenticated.
+--   2) Re-grant EXECUTE to `authenticated` ONLY for the RLS helper functions,
+--      because RLS policies evaluate them as the querying (authenticated) role —
+--      without this grant every query to the protected tables would fail with
+--      "permission denied for function ...".
+--
+-- Trigger functions need NO grant: triggers fire regardless of the caller's
+-- EXECUTE privilege. After running this, the only remaining advisor warnings
+-- are "Signed-In Users Can Execute" for the 3 helpers below, which is by design
+-- (each only ever acts on auth.uid(), so there is no privilege escalation).
+-- ============================================================
+DO $$
+DECLARE
+  fn record;
+BEGIN
+  FOR fn IN
+    SELECT p.oid::regprocedure AS sig
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prosecdef          -- SECURITY DEFINER functions only
+  LOOP
+    EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC, anon, authenticated', fn.sig);
+  END LOOP;
+END;
+$$;
+
+-- RLS helper functions must stay callable by signed-in users (policies use them).
+GRANT EXECUTE ON FUNCTION public.is_project_member(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_edit_project(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.can_view_user(uuid) TO authenticated;
