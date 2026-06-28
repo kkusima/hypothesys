@@ -9412,11 +9412,18 @@ function AppContent() {
           notificationSettings={notificationSettings}
           onUpdateNotificationSettings={updateNotificationSettings}
         />
+        {/* Top tabs stay visible everywhere; selecting one returns to that list. */}
+        <TabNav
+          tab={activeTab}
+          setTab={(id) => {
+            setActiveTab(id)
+            setSelectedProject(null)
+            setSelectedTask(null)
+            setView('main')
+          }}
+        />
         {view === 'main' && (
-          <>
-            <TabNav tab={activeTab} setTab={setActiveTab} />
-            {activeTab === 'projects' ? <ProjectsView /> : activeTab === 'today' ? <TodayView /> : <AllTasksView />}
-          </>
+          activeTab === 'projects' ? <ProjectsView /> : activeTab === 'today' ? <TodayView /> : <AllTasksView />
         )}
         <Walkthrough
           steps={[
