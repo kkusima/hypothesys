@@ -242,25 +242,73 @@ CREATE TABLE IF NOT EXISTS public.notification_settings (
 
 CREATE INDEX IF NOT EXISTS idx_notification_settings_user ON public.notification_settings(user_id);
 
--- Disable Row Level Security (RLS is now handled at the application level)
-ALTER TABLE public.users DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.projects DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.project_members DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.project_invitations DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.stages DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tasks DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.subtasks DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.comments DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.notifications DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.today_items DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.tags DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.task_tags DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.subtask_tags DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.notification_settings DISABLE ROW LEVEL SECURITY;
+CREATE OR REPLACE FUNCTION public.is_project_member(project_uuid UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.projects p
+    WHERE p.id = project_uuid AND p.owner_id = auth.uid()
+  ) OR EXISTS (
+    SELECT 1 FROM public.project_members pm
+    WHERE pm.project_id = project_uuid AND pm.user_id = auth.uid()
+  );
+$$;
 
--- 
--- DROP RLS POLICIES (No longer needed since RLS is disabled)
---
+CREATE OR REPLACE FUNCTION public.can_edit_project(project_uuid UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.projects p
+    WHERE p.id = project_uuid AND p.owner_id = auth.uid()
+  ) OR EXISTS (
+    SELECT 1 FROM public.project_members pm
+    WHERE pm.project_id = project_uuid
+      AND pm.user_id = auth.uid()
+      AND pm.role = 'editor'
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.can_view_user(target_user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT auth.uid() = target_user_id
+    OR EXISTS (
+      SELECT 1
+      FROM public.projects p
+      WHERE p.owner_id = target_user_id
+        AND public.is_project_member(p.id)
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM public.project_members pm
+      WHERE pm.user_id = target_user_id
+        AND public.is_project_member(pm.project_id)
+    );
+$$;
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.stages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subtasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.today_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.tags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.task_tags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.subtask_tags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notification_settings ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Users can view own profile" ON public.users;
 DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
@@ -282,6 +330,449 @@ DROP POLICY IF EXISTS "Users can manage comments" ON public.comments;
 DROP POLICY IF EXISTS "Users can manage own tags" ON public.tags;
 DROP POLICY IF EXISTS "Users can manage task tags" ON public.task_tags;
 DROP POLICY IF EXISTS "Users can manage subtask tags" ON public.subtask_tags;
+
+CREATE POLICY "Users can view own profile"
+  ON public.users FOR SELECT
+  USING (public.can_view_user(id));
+
+CREATE POLICY "Users can update own profile"
+  ON public.users FOR UPDATE
+  USING (id = auth.uid())
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY "Users can insert own profile"
+  ON public.users FOR INSERT
+  WITH CHECK (id = auth.uid());
+
+CREATE POLICY "Users can view accessible projects"
+  ON public.projects FOR SELECT
+  USING (public.is_project_member(id));
+
+CREATE POLICY "Owners can insert projects"
+  ON public.projects FOR INSERT
+  WITH CHECK (owner_id = auth.uid());
+
+CREATE POLICY "Owners can update projects"
+  ON public.projects FOR UPDATE
+  USING (owner_id = auth.uid())
+  WITH CHECK (owner_id = auth.uid());
+
+CREATE POLICY "Owners can delete projects"
+  ON public.projects FOR DELETE
+  USING (owner_id = auth.uid());
+
+CREATE POLICY "Users can view own membership"
+  ON public.project_members FOR SELECT
+  USING (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can insert membership or invite themselves"
+  ON public.project_members FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can update own membership or owners can manage members"
+  ON public.project_members FOR UPDATE
+  USING (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can delete own membership or owners can manage members"
+  ON public.project_members FOR DELETE
+  USING (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Owners and invitees can view invitations"
+  ON public.project_invitations FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+    OR lower(email) = lower(coalesce(auth.email(), ''))
+  );
+
+CREATE POLICY "Owners can insert invitations"
+  ON public.project_invitations FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Owners can update invitations"
+  ON public.project_invitations FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Owners can delete invitations"
+  ON public.project_invitations FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.projects p
+      WHERE p.id = project_id AND p.owner_id = auth.uid()
+    )
+  );
+
+CREATE POLICY "Users can view stages in accessible projects"
+  ON public.stages FOR SELECT
+  USING (public.is_project_member(project_id));
+
+CREATE POLICY "Editors can manage stages"
+  ON public.stages FOR INSERT
+  WITH CHECK (public.can_edit_project(project_id));
+
+CREATE POLICY "Editors can update stages"
+  ON public.stages FOR UPDATE
+  USING (public.can_edit_project(project_id))
+  WITH CHECK (public.can_edit_project(project_id));
+
+CREATE POLICY "Editors can delete stages"
+  ON public.stages FOR DELETE
+  USING (public.can_edit_project(project_id));
+
+CREATE POLICY "Users can view tasks in accessible projects"
+  ON public.tasks FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.stages s
+      WHERE s.id = stage_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can insert tasks"
+  ON public.tasks FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.stages s
+      WHERE s.id = stage_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can update tasks"
+  ON public.tasks FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.stages s
+      WHERE s.id = stage_id AND public.can_edit_project(s.project_id)
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.stages s
+      WHERE s.id = stage_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can delete tasks"
+  ON public.tasks FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.stages s
+      WHERE s.id = stage_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Users can view subtasks in accessible projects"
+  ON public.subtasks FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can insert subtasks"
+  ON public.subtasks FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can update subtasks"
+  ON public.subtasks FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can delete subtasks"
+  ON public.subtasks FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Users can view comments in accessible projects"
+  ON public.comments FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Members can add comments"
+  ON public.comments FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid()
+    AND EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Comment authors or editors can update comments"
+  ON public.comments FOR UPDATE
+  USING (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  )
+  WITH CHECK (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Comment authors or editors can delete comments"
+  ON public.comments FOR DELETE
+  USING (
+    user_id = auth.uid()
+    OR EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Users can view own tags"
+  ON public.tags FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can manage own tags"
+  ON public.tags FOR INSERT
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can update own tags"
+  ON public.tags FOR UPDATE
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can delete own tags"
+  ON public.tags FOR DELETE
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can view task tags in accessible projects"
+  ON public.task_tags FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can manage task tags"
+  ON public.task_tags FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can delete task tags"
+  ON public.task_tags FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.tasks t
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE t.id = task_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Users can view subtask tags in accessible projects"
+  ON public.subtask_tags FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.subtasks st
+      JOIN public.tasks t ON t.id = st.task_id
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE st.id = subtask_id AND public.is_project_member(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can manage subtask tags"
+  ON public.subtask_tags FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM public.subtasks st
+      JOIN public.tasks t ON t.id = st.task_id
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE st.id = subtask_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Editors can delete subtask tags"
+  ON public.subtask_tags FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM public.subtasks st
+      JOIN public.tasks t ON t.id = st.task_id
+      JOIN public.stages s ON s.id = t.stage_id
+      WHERE st.id = subtask_id AND public.can_edit_project(s.project_id)
+    )
+  );
+
+CREATE POLICY "Users can view notifications for themselves"
+  ON public.notifications FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can insert personal notifications or project members can notify collaborators"
+  ON public.notifications FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid()
+    OR (
+      project_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM public.projects p
+        WHERE p.id = project_id AND public.is_project_member(p.id)
+      )
+      AND (
+        EXISTS (
+          SELECT 1 FROM public.projects p
+          WHERE p.id = project_id AND p.owner_id = user_id
+        )
+        OR EXISTS (
+          SELECT 1 FROM public.project_members pm
+          WHERE pm.project_id = project_id AND pm.user_id = user_id
+        )
+      )
+    )
+  );
+
+CREATE POLICY "Users can update their notifications"
+  ON public.notifications FOR UPDATE
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can delete their notifications"
+  ON public.notifications FOR DELETE
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can view their today items"
+  ON public.today_items FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can manage their today items"
+  ON public.today_items FOR INSERT
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can update their today items"
+  ON public.today_items FOR UPDATE
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can delete their today items"
+  ON public.today_items FOR DELETE
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can view their notification settings"
+  ON public.notification_settings FOR SELECT
+  USING (user_id = auth.uid());
+
+CREATE POLICY "Users can manage their notification settings"
+  ON public.notification_settings FOR INSERT
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can update their notification settings"
+  ON public.notification_settings FOR UPDATE
+  USING (user_id = auth.uid())
+  WITH CHECK (user_id = auth.uid());
+
+CREATE POLICY "Users can delete their notification settings"
+  ON public.notification_settings FOR DELETE
+  USING (user_id = auth.uid());
 
 -- 
 -- TRIGGERS & FUNCTIONS FOR AUTOMATIC TIMESTAMP UPDATES

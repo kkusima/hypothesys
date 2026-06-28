@@ -9,7 +9,7 @@ import {
   Check, Plus, Trash2, Settings, ChevronLeft, ChevronRight,
   LogOut, Users, Share2, Mail, Clock, FileText, MessageSquare, Sun,
   Loader2, Search, MoreVertical, X, Copy, UserPlus, ChevronUp, ChevronDown, GripVertical,
-  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw
+  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw, Kanban
 } from 'lucide-react'
 
 // App Context
@@ -2403,13 +2403,13 @@ function DuplicatePopup() {
 }
 
 function ProjectsView() {
-  const { projects, setProjects, setView, setSelectedProject, loading, reorderProjects } = useApp()
+  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages } = useApp()
   const { user, demoMode } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
   const [sortOption, setSortOption] = useState('priority')
   const [sortDirection, setSortDirection] = useState('asc') // 'asc' or 'desc'
   const [showReorder, setShowReorder] = useState(false)
-  const [viewMode, setViewMode] = useState('grid') // 'grid' or 'list'
+  const [viewMode, setViewMode] = useState('kanban') // 'kanban' or 'grid' or 'list'
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [selectedProjectIDs, setSelectedProjectIDs] = useState(new Set())
 
@@ -2715,8 +2715,19 @@ function ProjectsView() {
     }
   }
 
+  const openProject = (project) => {
+    setSelectedProject(project)
+    setView('project')
+  }
+
+  const openTask = (project, task, stageIndex) => {
+    setSelectedProject(project)
+    setSelectedTask({ task, stageIndex })
+    setView('task')
+  }
+
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-8">
+    <div className="mx-auto max-w-[96rem] px-3 py-6 sm:px-6 sm:py-8 lg:px-8">
       <div className="flex flex-col gap-4 mb-6 sm:mb-8">
         <div className="flex justify-between items-center">
           <div>
@@ -2778,6 +2789,13 @@ function ProjectsView() {
           {/* View Toggle */}
           <div className="flex items-center bg-gray-100 rounded-lg p-1 flex-shrink-0">
             <button
+              onClick={() => setViewMode('kanban')}
+              className={`p-2 rounded-md transition-colors ${viewMode === 'kanban' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+              title="Kanban view"
+            >
+              <Kanban className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => setViewMode('grid')}
               className={`p-2 rounded-md transition-colors ${viewMode === 'grid' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
                 }`}
@@ -2830,6 +2848,27 @@ function ProjectsView() {
             Create Project
           </button>
         </div>
+      ) : viewMode === 'kanban' ? (
+        <div className="overflow-x-auto pb-4">
+          <div className="flex min-w-max items-stretch gap-4 pr-2">
+            {sortedProjects.map((project, i) => (
+              <KanbanProjectLane
+                key={project.id}
+                project={project}
+                index={i}
+                isSelectionMode={isSelectionMode}
+                isSelected={selectedProjectIDs.has(project.id)}
+                onToggleSelect={(projectId) => toggleProjectSelection(projectId)}
+                onOpenProject={openProject}
+                onOpenTask={openTask}
+                onDelete={deleteProject}
+                onDuplicate={duplicateProject}
+                onAddToToday={addToToday}
+                onMoveTask={moveTaskBetweenStages}
+              />
+            ))}
+          </div>
+        </div>
       ) : viewMode === 'grid' ? (
         <div className="grid gap-2 sm:gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           {sortedProjects.map((project, i) => (
@@ -2845,7 +2884,7 @@ function ProjectsView() {
                 if (isSelectionMode) {
                   toggleProjectSelection(project.id)
                 } else {
-                  setSelectedProject(project); setView('project');
+                  openProject(project)
                 }
               }}
               onDelete={() => deleteProject(project.id)}
@@ -2867,7 +2906,7 @@ function ProjectsView() {
                 if (isSelectionMode) {
                   toggleProjectSelection(project.id)
                 } else {
-                  setSelectedProject(project); setView('project');
+                  openProject(project)
                 }
               }}
               onDelete={() => deleteProject(project.id)}
@@ -3290,7 +3329,8 @@ function ProjectListItem({ project, index, onSelect, onDelete, onDuplicate, isSe
           </button>
         )}
 
-        {/* Priority Badge */}
+
+      {/* Priority Badge */}
         <PriorityBadge position={index + 1} rank={project.priority_rank} />
 
         {/* Emoji */}
@@ -3415,6 +3455,368 @@ function ProjectListItem({ project, index, onSelect, onDelete, onDuplicate, isSe
         </>
       )}
     </div>
+  )
+}
+
+function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday }) {
+  const taskOverdue = isOverdue(task.reminder_date) && !task.is_completed
+  const visibleTags = task.tags || []
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('application/x-hypothesys-task', JSON.stringify({ projectId: project.id, stageIndex, taskId: task.id }))
+      }}
+      onClick={() => onOpenTask(project, task, stageIndex)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpenTask(project, task, stageIndex)
+        }
+      }}
+      className={`group rounded-2xl border bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500/30 ${taskOverdue ? 'border-red-200 bg-red-50/70' : 'border-slate-200'}`}
+    >
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${task.is_completed ? 'bg-emerald-100 text-emerald-600' : taskOverdue ? 'bg-red-100 text-red-600' : 'bg-slate-100 text-slate-500'}`}>
+          {task.is_completed ? <Check className="w-4 h-4" /> : <FileText className="w-4 h-4" />}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start gap-2">
+            <div className={`min-w-0 flex-1 break-words text-sm font-semibold leading-5 ${task.is_completed ? 'line-through text-slate-400' : taskOverdue ? 'text-red-700' : 'text-slate-900'}`}>
+              {task.title}
+            </div>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenTask(project, task, stageIndex)
+              }}
+              className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
+            >
+              Open
+            </button>
+          </div>
+
+          {task.description && (
+            <p className="mt-1 break-words text-xs leading-5 text-slate-500">
+              {task.description}
+            </p>
+          )}
+
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {task.reminder_date && (
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${taskOverdue ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                <Clock className="w-3 h-3" />
+                {formatReminderDate(task.reminder_date)}
+              </span>
+            )}
+            {task.subtasks?.length > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                <MessageSquare className="w-3 h-3" />
+                {task.subtasks.filter(subtask => !subtask.is_completed).length}/{task.subtasks.length} open
+              </span>
+            )}
+            {visibleTags.map(tag => (
+              <span
+                key={tag.id}
+                className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${tag.color === 'blue' ? 'bg-blue-100 text-blue-700' : tag.color === 'red' ? 'bg-red-100 text-red-700' : tag.color === 'green' ? 'bg-green-100 text-green-700' : tag.color === 'amber' ? 'bg-amber-100 text-amber-700' : tag.color === 'purple' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-700'}`}
+              >
+                {tag.name}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1 self-start">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onAddToToday(task)
+            }}
+            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-amber-50 hover:text-amber-500"
+            title="Add to Tod(o)ay"
+          >
+            <Sun className="w-4 h-4" />
+          </button>
+          <ChevronRight className="w-4 h-4 shrink-0 text-gray-300" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function KanbanStagePanel({ project, stage, stageIndex, isActive, onOpenTask, onAddToToday, onMoveTask }) {
+  const [isExpanded, setIsExpanded] = useState(isActive)
+  const [showCompleted, setShowCompleted] = useState(false)
+  const [isDropTarget, setIsDropTarget] = useState(false)
+
+  useEffect(() => {
+    setIsExpanded(isActive)
+    setShowCompleted(false)
+  }, [project.id, stage.id, isActive])
+
+  const activeTasks = useMemo(() => (stage.tasks || []).filter(task => !task.is_completed), [stage.tasks])
+  const completedTasks = useMemo(() => (stage.tasks || []).filter(task => task.is_completed), [stage.tasks])
+
+  const handleDrop = (e) => {
+    e.preventDefault()
+    setIsDropTarget(false)
+    const raw = e.dataTransfer.getData('application/x-hypothesys-task')
+    if (!raw || !onMoveTask) return
+    try {
+      const payload = JSON.parse(raw)
+      onMoveTask({
+        sourceProjectId: payload.projectId,
+        sourceStageIndex: payload.stageIndex,
+        taskId: payload.taskId,
+        targetProjectId: project.id,
+        targetStageIndex: stageIndex
+      })
+    } catch (error) {
+      dwarn('Kanban drop failed', error)
+    }
+  }
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white/90 shadow-sm">
+      <button
+        type="button"
+        onClick={() => setIsExpanded(value => !value)}
+        className={`flex w-full items-start justify-between gap-3 px-4 py-3 text-left transition-colors ${isExpanded ? 'bg-slate-50' : 'bg-white hover:bg-slate-50/70'}`}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-semibold text-slate-900">{stage.name}</span>
+            {isActive && <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">Active</span>}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+            <span>{activeTasks.length} active</span>
+            <span>{completedTasks.length} completed</span>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-slate-400">
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-medium text-slate-500">{isExpanded ? 'Collapse' : 'Expand'}</span>
+          {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div
+          className={`border-t border-slate-100 p-3 transition-colors ${isDropTarget ? 'bg-indigo-50/60' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault()
+            setIsDropTarget(true)
+          }}
+          onDragLeave={() => setIsDropTarget(false)}
+          onDrop={handleDrop}
+        >
+          <div className="space-y-2">
+            {activeTasks.length > 0 ? (
+              activeTasks.map(task => (
+                <KanbanTaskCard
+                  key={task.id}
+                  project={project}
+                  stageIndex={stageIndex}
+                  task={task}
+                  onOpenTask={onOpenTask}
+                  onAddToToday={onAddToToday}
+                />
+              ))
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+                No active tasks in this stage.
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50/80">
+            <button
+              type="button"
+              onClick={() => setShowCompleted(value => !value)}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-slate-700">Completed tasks</div>
+                <div className="mt-0.5 text-[11px] text-slate-500">{completedTasks.length} collapsed</div>
+              </div>
+              {showCompleted ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+            </button>
+            {showCompleted && completedTasks.length > 0 && (
+              <div className="space-y-2 border-t border-slate-200 px-3 py-3">
+                {completedTasks.map(task => (
+                  <KanbanTaskCard
+                    key={task.id}
+                    project={project}
+                    stageIndex={stageIndex}
+                    task={task}
+                    onOpenTask={onOpenTask}
+                    onAddToToday={onAddToToday}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onToggleSelect, onOpenProject, onOpenTask, onDelete, onDuplicate, onAddToToday, onMoveTask }) {
+  const { user } = useAuth()
+  const [showMenu, setShowMenu] = useState(false)
+
+  const activeStageIndex = project.stages?.length ? Math.min(project.current_stage_index || 0, project.stages.length - 1) : 0
+  const activeStageName = project.stages?.[activeStageIndex]?.name || 'No stage'
+
+  const stats = useMemo(() => {
+    const stages = project.stages || []
+    const activeTasks = stages.reduce((acc, stage) => acc + (stage.tasks || []).filter(task => !task.is_completed).length, 0)
+    const completedTasks = stages.reduce((acc, stage) => acc + (stage.tasks || []).filter(task => task.is_completed).length, 0)
+    const overdueTasks = stages.reduce((acc, stage) => acc + (stage.tasks || []).filter(task => task.reminder_date && isOverdue(task.reminder_date) && !task.is_completed).length, 0)
+    const projectProgress = getProgress(project)
+    return { activeTasks, completedTasks, overdueTasks, projectProgress }
+  }, [project])
+
+  const isCollaborator = project.owner_id !== user?.id
+  const hasMembers = project.project_members?.length > 0
+  const isShared = isCollaborator || hasMembers
+
+  return (
+    <article
+      className={`flex min-h-full min-w-[18rem] max-w-[22rem] flex-col rounded-[28px] border border-slate-200 bg-slate-50/80 p-3 shadow-sm backdrop-blur transition-all ${isSelected ? 'ring-2 ring-indigo-500/40' : ''}`}
+      style={{ animationDelay: `${index * 45}ms` }}
+    >
+      <div className="flex items-start justify-between gap-3 rounded-[22px] border border-white/70 bg-white px-4 py-3 shadow-sm">
+        <button
+          type="button"
+          onClick={() => {
+            if (isSelectionMode) {
+              onToggleSelect(project.id)
+              return
+            }
+            onOpenProject(project)
+          }}
+          className="flex min-w-0 flex-1 items-start gap-3 text-left"
+        >
+          <span className="text-3xl">{project.emoji}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="truncate text-sm font-bold text-slate-900">{project.title}</h3>
+              {isShared && (
+                <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+                  <Share2 className="w-3 h-3" />
+                  Shared
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+              <span>{project.stages?.length || 0} stages</span>
+              <span>{stats.activeTasks} active</span>
+              <span>{stats.completedTasks} done</span>
+            </div>
+          </div>
+        </button>
+
+        <div className="flex shrink-0 items-start gap-1">
+          {isSelectionMode && (
+            <button
+              type="button"
+              onClick={() => onToggleSelect(project.id)}
+              className={`mt-1 flex h-6 w-6 items-center justify-center rounded-md border text-xs ${isSelected ? 'border-indigo-600 bg-indigo-600 text-white' : 'border-slate-300 bg-white text-slate-400'}`}
+              title={isSelected ? 'Deselect project' : 'Select project'}
+            >
+              {isSelected ? <Check className="w-3.5 h-3.5" /> : null}
+            </button>
+          )}
+          {!isSelectionMode && (
+            <button
+              type="button"
+              onClick={() => setShowMenu(value => !value)}
+              className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              title="Project actions"
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">Current stage</div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">{activeStageName}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpenProject(project)}
+            className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-semibold text-slate-600 transition-colors hover:bg-slate-200"
+          >
+            Open project
+          </button>
+        </div>
+
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full rounded-full bg-gradient-to-r from-slate-300 to-indigo-500" style={{ width: `${Math.max(4, Math.round(stats.projectProgress * 100))}%` }} />
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+          <span>{Math.round(stats.projectProgress * 100)}% complete</span>
+          <span>{stats.overdueTasks} overdue</span>
+        </div>
+      </div>
+
+      <div className="mt-3 flex-1 space-y-3 overflow-y-auto pr-1">
+        {(project.stages || []).map((stage, stageIndex) => (
+          <KanbanStagePanel
+            key={stage.id}
+            project={project}
+            stage={stage}
+            stageIndex={stageIndex}
+            isActive={stageIndex === activeStageIndex}
+            onOpenTask={onOpenTask}
+            onAddToToday={onAddToToday}
+            onMoveTask={onMoveTask}
+          />
+        ))}
+      </div>
+
+      {showMenu && !isSelectionMode && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+          <div className="absolute right-3 top-14 z-50 min-w-[160px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <button
+              type="button"
+              onClick={() => {
+                setShowMenu(false)
+                onDuplicate(project)
+              }}
+              className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+            >
+              <Copy className="w-4 h-4 text-slate-400" />
+              Duplicate
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowMenu(false)
+                onDelete(project.id)
+              }}
+              className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
+          </div>
+        </>
+      )}
+    </article>
   )
 }
 
@@ -5575,7 +5977,7 @@ function TaskDetail() {
           </button>
           <div className="flex-1 min-w-0">
             {isEditingTitle ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 <input
                   type="text"
                   value={localTitle}
@@ -5588,28 +5990,28 @@ function TaskDetail() {
                       cancelTitleEdit()
                     }
                   }}
-                  className={`flex-1 text-xl sm:text-2xl font-bold bg-white border border-gray-200 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 ${taskOverdue ? 'text-red-700' : ''}`}
+                  className={`w-full min-w-0 flex-1 text-xl sm:text-2xl font-bold bg-white border border-gray-200 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 ${taskOverdue ? 'text-red-700' : ''}`}
                   autoFocus
                 />
                 <button
                   onClick={saveTitle}
-                  className="px-3 py-1.5 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg shadow-sm transition-all"
+                  className="w-full sm:w-auto px-3 py-1.5 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg shadow-sm transition-all"
                 >
                   Save
                 </button>
                 <button
                   onClick={cancelTitleEdit}
-                  className="px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                  className="w-full sm:w-auto px-3 py-1.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-2 group/title">
-                <h2 className={`text-xl sm:text-2xl font-bold ${taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>{currentTask.title}</h2>
+              <div className="flex items-start gap-2 group/title">
+                <h2 className={`min-w-0 break-words text-xl sm:text-2xl font-bold ${taskOverdue ? 'text-red-700' : 'text-gray-900'}`}>{currentTask.title}</h2>
                 <button
                   onClick={() => setIsEditingTitle(true)}
-                  className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-opacity opacity-0 group-hover/title:opacity-100"
+                  className="shrink-0 p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-opacity opacity-0 group-hover/title:opacity-100"
                   title="Rename Task"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
@@ -7736,6 +8138,92 @@ function AppContent() {
     }
   }
 
+  const moveTaskBetweenStages = async ({ sourceProjectId, sourceStageIndex, taskId, targetProjectId, targetStageIndex }) => {
+    const sourceProject = projects.find(p => p.id === sourceProjectId)
+    const targetProject = projects.find(p => p.id === targetProjectId)
+    if (!sourceProject || !targetProject) return
+
+    const sourceStage = sourceProject.stages?.[sourceStageIndex]
+    const targetStage = targetProject.stages?.[targetStageIndex]
+    if (!sourceStage || !targetStage) return
+
+    const sourceTask = sourceStage.tasks?.find(task => task.id === taskId)
+    if (!sourceTask) return
+
+    const now = new Date().toISOString()
+    const userName = user?.user_metadata?.name || user?.email || 'Unknown'
+    const sameStage = sourceProjectId === targetProjectId && sourceStageIndex === targetStageIndex
+
+    const normalizeTasks = (tasks, stageId) => tasks.map((task, index) => ({
+      ...task,
+      stage_id: stageId,
+      order_index: index,
+      updated_at: now,
+      modified_by: user?.id,
+      modified_by_name: userName
+    }))
+
+    const updatedProjects = projects.map(project => {
+      let changed = false
+      const updatedStages = (project.stages || []).map((stage, stageIndex) => {
+        const isSourceStage = project.id === sourceProjectId && stageIndex === sourceStageIndex
+        const isTargetStage = project.id === targetProjectId && stageIndex === targetStageIndex
+        if (!isSourceStage && !isTargetStage) return stage
+
+        changed = true
+
+        if (sameStage && isSourceStage) {
+          const reordered = [sourceTask, ...(stage.tasks || []).filter(task => task.id !== taskId)]
+          return { ...stage, tasks: normalizeTasks(reordered, stage.id) }
+        }
+
+        if (isSourceStage) {
+          const remaining = (stage.tasks || []).filter(task => task.id !== taskId)
+          return { ...stage, tasks: normalizeTasks(remaining, stage.id) }
+        }
+
+        if (isTargetStage) {
+          const inserted = [sourceTask, ...(stage.tasks || []).filter(task => task.id !== taskId)]
+          return { ...stage, tasks: normalizeTasks(inserted, stage.id) }
+        }
+
+        return stage
+      })
+
+      if (!changed) return project
+      return {
+        ...project,
+        stages: updatedStages,
+        updated_at: now,
+        modified_by: user?.id,
+        modified_by_name: userName
+      }
+    })
+
+    setProjects(updatedProjects)
+    if (demoMode) {
+      saveLocal(updatedProjects)
+      return
+    }
+
+    const movedTaskUpdates = {
+      stage_id: targetStage.id,
+      order_index: 0,
+      modified_by: user?.id,
+      updated_at: now
+    }
+    await db.updateTask(taskId, movedTaskUpdates)
+
+    const sourceAfter = updatedProjects.find(project => project.id === sourceProjectId)?.stages?.[sourceStageIndex]?.tasks || []
+    const targetAfter = updatedProjects.find(project => project.id === targetProjectId)?.stages?.[targetStageIndex]?.tasks || []
+    const stageUpdates = sameStage ? targetAfter : [...sourceAfter, ...targetAfter]
+    const uniqueUpdates = new Map(stageUpdates.map(task => [task.id, { id: task.id, order_index: task.order_index }]))
+    const { error } = await db.bulkUpdateTasks([...uniqueUpdates.values()])
+    if (error) {
+      dwarn('moveTaskBetweenStages sync failed', error)
+    }
+  }
+
   // Keep ref in sync
   useEffect(() => {
     notificationsRef.current = notifications
@@ -8369,7 +8857,7 @@ function AppContent() {
     view, setView,
     loading,
     reorderProjects,
-    todayItems, addToToday, addLocalTodayTask, removeTodayItem, reorderToday, reorderTasks, reorderSubtasks,
+    todayItems, addToToday, addLocalTodayTask, removeTodayItem, reorderToday, reorderTasks, reorderSubtasks, moveTaskBetweenStages,
     toggleTodayDone,
     addSubtaskToToday,
     removeTodayItems, duplicateTodayItems,
