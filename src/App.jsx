@@ -4015,7 +4015,7 @@ function KanbanProjectLane({ project, index, isSelectionMode, isSelected, onTogg
 
         {/* Progress bar directly below the project name */}
         <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-slate-100">
-          <div className="h-full rounded-full bg-gradient-to-r from-slate-300 to-indigo-500" style={{ width: `${Math.max(4, Math.round(stats.projectProgress * 100))}%` }} />
+          <div className="h-full rounded-full bg-gradient-to-r from-gray-300 to-gray-500" style={{ width: `${Math.max(4, Math.round(stats.projectProgress * 100))}%` }} />
         </div>
         <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
           <span className="font-medium text-slate-600">{Math.round(stats.projectProgress * 100)}% complete</span>
