@@ -264,11 +264,13 @@ export const db = {
       devLog('🗑️ Deleting project:', id)
       // .select() returns the rows actually deleted so we can tell when RLS
       // silently removes 0 rows (delete "succeeds" but nothing is deleted).
+      // Owner-only deletion is enforced server-side by the RLS policy
+      // ("Owners can delete projects" USING owner_id = auth.uid()), so no
+      // client-side owner filter is needed here.
       const { data, error } = await supabase
         .from('projects')
         .delete()
         .eq('id', id)
-        .eq('owner_id', userId) // Security check
         .select('id')
 
       if (error) {

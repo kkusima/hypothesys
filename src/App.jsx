@@ -9,7 +9,7 @@ import {
   Check, Plus, Trash2, Settings, ChevronLeft, ChevronRight,
   LogOut, Users, Share2, Mail, Clock, FileText, MessageSquare, Sun,
   Loader2, Search, MoreVertical, X, Copy, UserPlus, ChevronUp, ChevronDown, GripVertical,
-  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw, Kanban
+  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw, Kanban, RotateCcw
 } from 'lucide-react'
 
 // App Context
@@ -156,6 +156,71 @@ const saveLocal = (data) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
   } catch { }
+}
+
+// Rebuild a previously-deleted project (with its stages, tasks, subtasks and
+// tag links) back into the database, preserving the original IDs so that other
+// references (e.g. Tod(o)ay items) remain valid. Used by Undo.
+const restoreProjectInDb = async (project, ownerId) => {
+  await db.createProject({
+    id: project.id,
+    title: project.title,
+    emoji: project.emoji,
+    owner_id: ownerId,
+    priority_rank: project.priority_rank,
+    current_stage_index: project.current_stage_index ?? 0,
+    created_at: project.created_at,
+    updated_at: project.updated_at
+  })
+  for (const stage of project.stages || []) {
+    await db.createStage({
+      id: stage.id,
+      project_id: project.id,
+      name: stage.name,
+      order_index: stage.order_index ?? 0
+    })
+    for (const task of stage.tasks || []) {
+      await restoreTaskInDb(task, stage.id)
+    }
+  }
+}
+
+// Rebuild a single task (with its subtasks and tag links) preserving IDs.
+const restoreTaskInDb = async (task, stageId) => {
+  await db.createTask({
+    id: task.id,
+    stage_id: stageId,
+    title: task.title,
+    description: task.description || '',
+    is_completed: !!task.is_completed,
+    reminder_date: task.reminder_date || null,
+    order_index: task.order_index ?? 0,
+    created_by: task.created_by || null,
+    modified_by: task.modified_by || null
+  })
+  for (const sub of task.subtasks || []) {
+    await restoreSubtaskInDb(sub, task.id)
+  }
+  for (const tag of task.tags || []) {
+    try { await db.addTagToTask(task.id, tag.id) } catch { }
+  }
+}
+
+// Rebuild a single subtask (with its tag links) preserving IDs.
+const restoreSubtaskInDb = async (sub, taskId) => {
+  await db.createSubtask({
+    id: sub.id,
+    task_id: taskId,
+    title: sub.title,
+    is_completed: !!sub.is_completed,
+    reminder_date: sub.reminder_date || null,
+    order_index: sub.order_index ?? 0,
+    created_by: sub.created_by || null,
+    modified_by: sub.modified_by || null
+  })
+  for (const tag of sub.tags || []) {
+    try { await db.addTagToSubtask(sub.id, tag.id) } catch { }
+  }
 }
 
 // ============================================
@@ -2403,7 +2468,7 @@ function DuplicatePopup() {
 }
 
 function ProjectsView() {
-  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages, deletedProjectIdsRef, reloadProjects, showToast } = useApp()
+  const { projects, setProjects, setView, setSelectedProject, setSelectedTask, loading, reorderProjects, addToToday, moveTaskBetweenStages, deletedProjectIdsRef, reloadProjects, showToast, registerUndo } = useApp()
   const { user, demoMode } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
   const [sortOption, setSortOption] = useState('priority')
@@ -2479,13 +2544,38 @@ function ProjectsView() {
     if (toDelete.length === 0) return
     if (!window.confirm(`Delete ${toDelete.length} project(s) and all their data?`)) return
 
+    // Snapshot for undo + guard against realtime resurrection.
+    const removed = projects.filter(p => selectedProjectIDs.has(p.id))
+    removed.forEach(p => deletedProjectIdsRef.current.add(p.id))
+
     if (demoMode) {
-      setProjects(projects.filter(p => !selectedProjectIDs.has(p.id)))
+      const remaining = projects.filter(p => !selectedProjectIDs.has(p.id))
+      setProjects(remaining)
+      saveLocal(remaining)
     } else {
       // In real mode, delete each
       toDelete.forEach(id => db.deleteProject(id))
       setProjects(projects.filter(p => !selectedProjectIDs.has(p.id)))
     }
+
+    if (removed.length > 0) {
+      const count = removed.length
+      registerUndo(`${count} project${count > 1 ? 's' : ''} deleted`, async () => {
+        removed.forEach(p => deletedProjectIdsRef.current.delete(p.id))
+        setProjects(prev => {
+          const next = [...prev]
+          removed.forEach(p => { if (!next.some(x => x.id === p.id)) next.push(p) })
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          for (const p of removed) await restoreProjectInDb(p, user?.id)
+          reloadProjects?.()
+        }
+      })
+    }
+
+    setTimeout(() => removed.forEach(p => deletedProjectIdsRef.current.delete(p.id)), 8000)
     setSelectedProjectIDs(new Set())
     setIsSelectionMode(false)
   }
@@ -2601,11 +2691,16 @@ function ProjectsView() {
   const deleteProject = async (id) => {
     if (!window.confirm('Delete this project and all its data?')) return
 
+    // Snapshot the full project tree so the deletion can be undone.
+    const snapshot = projects.find(p => p.id === id)
+
     // Guard: mark as deleted so realtime handler won't resurrect it
     deletedProjectIdsRef.current.add(id)
 
     if (demoMode) {
-      setProjects(projects.filter(p => p.id !== id))
+      const remaining = projects.filter(p => p.id !== id)
+      setProjects(remaining)
+      saveLocal(remaining)
     } else {
       // Optimistically remove, then confirm the DB actually deleted the row.
       setProjects(projects.filter(p => p.id !== id))
@@ -2626,6 +2721,26 @@ function ProjectsView() {
         reloadProjects?.()
         return
       }
+    }
+
+    // Offer a one-click undo of this deletion.
+    if (snapshot) {
+      registerUndo('Project deleted', async () => {
+        // Allow it to come back (lift the realtime resurrection guard).
+        deletedProjectIdsRef.current.delete(id)
+        if (demoMode) {
+          setProjects(prev => {
+            const next = prev.some(p => p.id === snapshot.id) ? prev : [...prev, snapshot]
+            saveLocal(next)
+            return next
+          })
+        } else {
+          // Instant optimistic restore, then rebuild it in the database.
+          setProjects(prev => prev.some(p => p.id === snapshot.id) ? prev : [...prev, snapshot])
+          await restoreProjectInDb(snapshot, user?.id)
+          reloadProjects?.()
+        }
+      })
     }
 
     // Cleanup guard after propagation delay
@@ -4211,7 +4326,7 @@ function CreateProjectModal({ onClose }) {
 // PROJECT DETAIL VIEW
 // ============================================
 function ProjectDetail() {
-  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef } = useApp()
+  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef, registerUndo, reloadProjects } = useApp()
   const { demoMode, user } = useAuth()
   const currentUserName = user?.user_metadata?.name || user?.email || 'Unknown'
   const [previewIndex, setPreviewIndex] = useState(null)
@@ -4430,6 +4545,11 @@ function ProjectDetail() {
   }
 
   const deleteTask = async (taskId) => {
+    // Snapshot for undo (capture the task and which stage it lived in).
+    const sourceStage = project.stages[stageIndex]
+    const snapshot = sourceStage?.tasks.find(t => t.id === taskId)
+    const projectId = project.id
+
     // Guard: mark as deleted so realtime handler won't resurrect it
     deletedTaskIdsRef.current.add(taskId)
 
@@ -4452,6 +4572,26 @@ function ProjectDetail() {
         })
       }
       await db.deleteTask(taskId)
+    }
+
+    if (snapshot && sourceStage) {
+      registerUndo('Task deleted', async () => {
+        deletedTaskIdsRef.current.delete(taskId)
+        setProjects(prev => {
+          const next = prev.map(p => p.id === projectId ? {
+            ...p,
+            stages: p.stages.map(s => s.id === sourceStage.id
+              ? (s.tasks.some(t => t.id === taskId) ? s : { ...s, tasks: [...s.tasks, snapshot] })
+              : s)
+          } : p)
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          await restoreTaskInDb(snapshot, sourceStage.id)
+          reloadProjects?.()
+        }
+      })
     }
 
     // Cleanup guard after propagation delay
@@ -5653,7 +5793,7 @@ function TaskDetail() {
   const {
     projects, setProjects, selectedProject, setSelectedProject, selectedTask, setSelectedTask, setView, addToToday, addSubtaskToToday,
     tags, activeTagPicker, setActiveTagPicker, assignTag, unassignTag, createTag, editTag, deleteTag, reorderSubtasks,
-    showToast, deletedTaskIdsRef
+    showToast, deletedTaskIdsRef, registerUndo, reloadProjects
   } = useApp()
   const { demoMode, user } = useAuth()
   const [newSubtask, setNewSubtask] = useState('')
@@ -5844,6 +5984,11 @@ function TaskDetail() {
     if (selectedSubtaskIds.size === 0) return
     if (!window.confirm(`Delete ${selectedSubtaskIds.size} subtask(s)?`)) return
 
+    // Snapshot removed subtasks for undo.
+    const removed = currentTask.subtasks.filter(s => selectedSubtaskIds.has(s.id))
+    const taskId = currentTask.id
+    const projectId = project.id
+
     const remaining = currentTask.subtasks.filter(s => !selectedSubtaskIds.has(s.id))
     updateTask({ subtasks: remaining })
 
@@ -5851,6 +5996,31 @@ function TaskDetail() {
       for (const subtaskId of selectedSubtaskIds) {
         await db.deleteSubtask(subtaskId)
       }
+    }
+
+    if (removed.length > 0) {
+      const count = removed.length
+      registerUndo(`${count} subtask${count > 1 ? 's' : ''} deleted`, async () => {
+        setProjects(prev => {
+          const next = prev.map(p => p.id === projectId ? {
+            ...p,
+            stages: p.stages.map(s => ({
+              ...s,
+              tasks: s.tasks.map(t => {
+                if (t.id !== taskId) return t
+                const toAdd = removed.filter(r => !(t.subtasks || []).some(x => x.id === r.id))
+                return toAdd.length ? { ...t, subtasks: [...(t.subtasks || []), ...toAdd] } : t
+              })
+            }))
+          } : p)
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          for (const sub of removed) await restoreSubtaskInDb(sub, taskId)
+          reloadProjects?.()
+        }
+      })
     }
 
     setSelectedSubtaskIds(new Set())
@@ -6054,8 +6224,34 @@ function TaskDetail() {
   }
 
   const deleteSubtask = async (subtaskId) => {
+    const snapshot = currentTask.subtasks.find(s => s.id === subtaskId)
+    const taskId = currentTask.id
+    const projectId = project.id
+
     updateTask({ subtasks: currentTask.subtasks.filter(s => s.id !== subtaskId) })
     if (!demoMode) await db.deleteSubtask(subtaskId)
+
+    if (snapshot) {
+      registerUndo('Subtask deleted', async () => {
+        setProjects(prev => {
+          const next = prev.map(p => p.id === projectId ? {
+            ...p,
+            stages: p.stages.map(s => ({
+              ...s,
+              tasks: s.tasks.map(t => t.id === taskId
+                ? (t.subtasks?.some(x => x.id === subtaskId) ? t : { ...t, subtasks: [...(t.subtasks || []), snapshot] })
+                : t)
+            }))
+          } : p)
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          await restoreSubtaskInDb(snapshot, taskId)
+          reloadProjects?.()
+        }
+      })
+    }
   }
 
   const addComment = async () => {
@@ -6078,6 +6274,12 @@ function TaskDetail() {
   const deleteTask = async () => {
     if (!window.confirm('Delete this task?')) return
 
+    // Snapshot for undo (full task incl. subtasks/tags) and its source stage.
+    const sourceStage = project.stages[stageIndex]
+    const snapshot = sourceStage?.tasks.find(t => t.id === task.id)
+    const taskId = task.id
+    const projectId = project.id
+
     // Guard: mark as deleted so realtime handler won't resurrect it
     deletedTaskIdsRef.current.add(task.id)
 
@@ -6097,6 +6299,26 @@ function TaskDetail() {
     if (!demoMode) await db.deleteTask(task.id)
     setSelectedTask(null)
     setView('project')
+
+    if (snapshot && sourceStage) {
+      registerUndo('Task deleted', async () => {
+        deletedTaskIdsRef.current.delete(taskId)
+        setProjects(prev => {
+          const next = prev.map(p => p.id === projectId ? {
+            ...p,
+            stages: p.stages.map(s => s.id === sourceStage.id
+              ? (s.tasks.some(t => t.id === taskId) ? s : { ...s, tasks: [...s.tasks, snapshot] })
+              : s)
+          } : p)
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          await restoreTaskInDb(snapshot, sourceStage.id)
+          reloadProjects?.()
+        }
+      })
+    }
 
     // Cleanup guard after propagation delay
     setTimeout(() => deletedTaskIdsRef.current.delete(task.id), 8000)
@@ -6717,7 +6939,7 @@ function TaskDetail() {
 // ALL TASKS VIEW
 // ============================================
 function AllTasksView() {
-  const { projects, setProjects, setSelectedProject, setSelectedTask, setView, tags, assignTag, unassignTag, createTag, editTag, deleteTag, deletedTaskIdsRef } = useApp()
+  const { projects, setProjects, setSelectedProject, setSelectedTask, setView, tags, assignTag, unassignTag, createTag, editTag, deleteTag, deletedTaskIdsRef, registerUndo, reloadProjects } = useApp()
   const { demoMode, user } = useAuth()
   const [activeSubTab, setActiveSubTab] = useState('active') // 'active', 'scheduled', 'complete', 'all'
   const [sortOption, setSortOption] = useState('priority')
@@ -6946,8 +7168,15 @@ function AllTasksView() {
     if (selectedTaskIds.size === 0) return
     if (!window.confirm(`Delete ${selectedTaskIds.size} task(s)?`)) return
 
+    // Snapshot each task (with the stage it lived in) for undo.
+    const removed = []
+    projects.forEach(project => project.stages?.forEach(stage => stage.tasks?.forEach(task => {
+      if (selectedTaskIds.has(task.id)) removed.push({ task, stageId: stage.id })
+    })))
+    const removedIds = Array.from(selectedTaskIds)
+
     // Guard: mark all as deleted so realtime handler won't resurrect them
-    for (const taskId of selectedTaskIds) {
+    for (const taskId of removedIds) {
       deletedTaskIdsRef.current.add(taskId)
     }
 
@@ -6964,14 +7193,38 @@ function AllTasksView() {
     if (demoMode) saveLocal(newProjects)
 
     if (!demoMode) {
-      for (const taskId of selectedTaskIds) {
+      for (const taskId of removedIds) {
         await db.deleteTask(taskId)
       }
     }
 
+    if (removed.length > 0) {
+      const count = removed.length
+      registerUndo(`${count} task${count > 1 ? 's' : ''} deleted`, async () => {
+        removed.forEach(({ task }) => deletedTaskIdsRef.current.delete(task.id))
+        setProjects(prev => {
+          const next = prev.map(p => ({
+            ...p,
+            stages: p.stages?.map(s => {
+              const toAdd = removed
+                .filter(r => r.stageId === s.id && !(s.tasks || []).some(t => t.id === r.task.id))
+                .map(r => r.task)
+              return toAdd.length ? { ...s, tasks: [...(s.tasks || []), ...toAdd] } : s
+            })
+          }))
+          if (demoMode) saveLocal(next)
+          return next
+        })
+        if (!demoMode) {
+          for (const { task, stageId } of removed) await restoreTaskInDb(task, stageId)
+          reloadProjects?.()
+        }
+      })
+    }
+
     // Cleanup guards after propagation delay
     setTimeout(() => {
-      for (const taskId of selectedTaskIds) {
+      for (const taskId of removedIds) {
         deletedTaskIdsRef.current.delete(taskId)
       }
     }, 8000)
@@ -7605,6 +7858,51 @@ function AppContent() {
   const dismissedNotificationsRef = useRef(new Set()) // Tracks cleared/deleted notification keys to prevent regeneration
   const deletedProjectIdsRef = useRef(new Set()) // Guard: prevents realtime from resurrecting deleted projects
   const deletedTaskIdsRef = useRef(new Set()) // Guard: prevents realtime from resurrecting deleted tasks
+
+  // ---- Single-level Undo (undoes only the very last registered action) ----
+  const [undoAction, setUndoAction] = useState(null) // { id, label, run }
+  const undoTimerRef = useRef(null)
+
+  const registerUndo = (label, run) => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    const id = uuid()
+    setUndoAction({ id, label, run })
+    // Auto-dismiss the undo prompt after a short window (Gmail-style).
+    undoTimerRef.current = setTimeout(() => {
+      setUndoAction(curr => (curr && curr.id === id ? null : curr))
+    }, 8000)
+  }
+
+  const undoLast = async () => {
+    const action = undoAction
+    if (!action) return
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current)
+    setUndoAction(null)
+    try {
+      await action.run()
+      showToast('Undone')
+    } catch (e) {
+      showToast('Could not undo that action')
+    }
+  }
+
+  // Keep a ref to the latest undoLast so the global key handler isn't stale.
+  const undoLastRef = useRef(undoLast)
+  undoLastRef.current = undoLast
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const isUndoCombo = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && (e.key === 'z' || e.key === 'Z')
+      if (!isUndoCombo) return
+      // Don't hijack the browser's native undo while typing in a field.
+      const el = document.activeElement
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      e.preventDefault()
+      undoLastRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   const [notificationSettings, setNotificationSettings] = useState({}) // Granular notification preferences
   const [walkVisible, setWalkVisible] = useState(false)
   // Today / focus state (persisted per user, not per-day)
@@ -9058,7 +9356,9 @@ function AppContent() {
     duplicateCheck, setDuplicateCheck, handleDuplicateAction,
     // Deletion guards: shared so child delete handlers can mark items
     // as deleted and the realtime listener won't resurrect them.
-    deletedProjectIdsRef, deletedTaskIdsRef
+    deletedProjectIdsRef, deletedTaskIdsRef,
+    // Single-level undo
+    registerUndo, undoLast, undoAction
   }
 
 
@@ -9104,6 +9404,23 @@ function AppContent() {
         {toast && (
           <div className="fixed bottom-20 right-6 z-50">
             <div className="px-4 py-2 bg-gray-900 text-white rounded-lg shadow-lg text-sm">{toast.message}</div>
+          </div>
+        )}
+
+        {/* Undo snackbar — undoes only the very last action */}
+        {undoAction && (
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 animate-fade-in px-3 w-[calc(100%-1.5rem)] sm:w-auto">
+            <div className="flex items-center justify-between gap-4 px-4 py-2.5 bg-gray-900 text-white rounded-xl shadow-2xl text-sm">
+              <span className="truncate">{undoAction.label}</span>
+              <button
+                onClick={undoLast}
+                className="shrink-0 inline-flex items-center gap-1.5 font-semibold text-amber-300 hover:text-amber-200"
+                title="Undo (⌘/Ctrl+Z)"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Undo
+              </button>
+            </div>
           </div>
         )}
 
