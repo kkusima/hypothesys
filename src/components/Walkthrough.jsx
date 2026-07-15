@@ -16,7 +16,9 @@ export default function Walkthrough({ steps = [], visible = false, onClose = () 
         const el = document.querySelector(step.selector)
         if (!el) { setPos(null); return }
         const r = el.getBoundingClientRect()
-        setPos({ top: r.top + window.scrollY, left: r.left + window.scrollX, width: r.width, height: r.height })
+        // Store viewport-relative coords; the panel uses position:fixed and we
+        // recompute on scroll/resize, so scroll offsets must NOT be baked in here.
+        setPos({ top: r.top, left: r.left, width: r.width, height: r.height })
       } catch (e) {
         setPos(null)
       }
@@ -50,19 +52,20 @@ export default function Walkthrough({ steps = [], visible = false, onClose = () 
     const viewportW = window.innerWidth
     const viewportH = window.innerHeight
 
+    // All coords are viewport-relative (pos comes from getBoundingClientRect).
     // compute left and clamp to viewport
-    let left = pos.left + window.scrollX
+    let left = pos.left
     if (left + panelMaxW + margin > viewportW) left = Math.max(margin, viewportW - panelMaxW - margin)
     if (left < margin) left = margin
 
     // prefer below target; if not enough space, place above
-    let top = pos.top + window.scrollY + pos.height + 8
-    if (top + panelEstimateH + margin > viewportH + window.scrollY) {
+    let top = pos.top + pos.height + 8
+    if (top + panelEstimateH + margin > viewportH) {
       // place above
-      top = Math.max(margin, pos.top + window.scrollY - panelEstimateH - 8)
+      top = Math.max(margin, pos.top - panelEstimateH - 8)
     }
 
-    return { ...base, position: 'absolute', top, left, minWidth: 220, maxWidth: panelMaxW }
+    return { ...base, position: 'fixed', top, left, minWidth: 220, maxWidth: panelMaxW }
   })()
 
   return (

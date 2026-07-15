@@ -9,7 +9,8 @@ import {
   Check, Plus, Trash2, Settings, ChevronLeft, ChevronRight,
   LogOut, Users, Share2, Mail, Clock, FileText, MessageSquare, Sun,
   Loader2, Search, MoreVertical, X, Copy, UserPlus, ChevronUp, ChevronDown, GripVertical,
-  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw, Kanban, RotateCcw
+  LayoutGrid, List, Bell, Calendar, AlertCircle, CheckCircle, Tag, Smartphone, RefreshCw, Kanban, RotateCcw,
+  ExternalLink, Download, Printer, Repeat
 } from 'lucide-react'
 
 // App Context
@@ -25,6 +26,19 @@ const PRIORITIES = [
 const EMOJIS = [
   '🧪', '🔬', '📊', '🧬', '🔥', '💡', '🌱', '⚗️', '🔭', '💻', '📝', '🎯', '🚀', '⚡', '🧠', '🌍',
   '📚', '✨', '🎨', '🔧', '📈', '🏆', '💎', '🌟', '🎓', '📱', '🖥️', '🔐', '📡', '🛠️', '🏗️', '💼'
+]
+// Default workflow stages for a blank project (kept in one place so the Blank
+// template and the CreateProjectModal initializer stay in sync).
+const DEFAULT_STAGES = ['Ideation', 'Experiments', 'Analysis', 'Writing', 'Publication']
+// Built-in project templates — a small curated set of research workflows that
+// pre-fill the emoji + stages. "Blank" reproduces today's default.
+const TEMPLATES = [
+  { id: 'blank', name: 'Blank', emoji: '🧪', description: 'Start from scratch', titlePlaceholder: 'Enter project title', stages: DEFAULT_STAGES },
+  { id: 'manuscript', name: 'Manuscript / Paper', emoji: '📝', description: 'Draft to submission', titlePlaceholder: 'e.g. Nature Methods paper', stages: ['Outline', 'Drafting', 'Figures', 'Internal Review', 'Revision', 'Submission'] },
+  { id: 'experiment', name: 'Experiment', emoji: '🔬', description: 'Bench to results', titlePlaceholder: 'e.g. CRISPR knockout assay', stages: ['Design', 'Setup', 'Data Collection', 'Analysis', 'Write-up'] },
+  { id: 'litreview', name: 'Literature Review', emoji: '📚', description: 'Survey the field', titlePlaceholder: 'e.g. Systematic review of X', stages: ['Scoping', 'Search', 'Screening', 'Synthesis', 'Writing'] },
+  { id: 'grant', name: 'Grant Application', emoji: '💼', description: 'Proposal to submission', titlePlaceholder: 'e.g. NIH R01 resubmission', stages: ['Concept', 'Aims', 'Drafting', 'Budget', 'Internal Review', 'Submission'] },
+  { id: 'thesis', name: 'Thesis Chapter', emoji: '🎓', description: 'Chapter to defense-ready', titlePlaceholder: 'e.g. Chapter 3 - Results', stages: ['Outline', 'Drafting', 'Analysis', 'Revision', 'Advisor Review'] },
 ]
 const STORAGE_KEY = 'hypothesys_local'
 const TAGS_STORAGE_KEY = 'hypothesys_tags_local'
@@ -49,6 +63,43 @@ const useMounted = () => {
 const isOverdue = (reminderDate) => {
   if (!reminderDate) return false
   return new Date(reminderDate) < new Date()
+}
+
+// Given a reminder ISO + recurrence, return the next occurrence strictly after
+// `from` (skipping any missed periods so a long-closed app fires only ONE
+// catch-up). Returns null for non-recurring reminders.
+const RECURRENCE_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+]
+const nextOccurrence = (iso, recurrence, from = new Date()) => {
+  if (!iso || !recurrence || recurrence === 'none') return null
+  const start = new Date(iso)
+  // Advance one calendar month, always re-pinning to the ORIGINAL anchor day and
+  // clamping overflow (e.g. Jan 31 -> Feb 28 -> Mar 31) so a short month never
+  // permanently drifts the firing day.
+  const advanceMonthly = (dt) => {
+    const target = new Date(dt.getFullYear(), dt.getMonth() + 1, 1, start.getHours(), start.getMinutes(), 0, 0)
+    const daysInTarget = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
+    target.setDate(Math.min(start.getDate(), daysInTarget))
+    return target
+  }
+  let d = new Date(iso)
+  let guard = 0
+  while (d <= from && guard < 4000) {
+    if (recurrence === 'monthly') d = advanceMonthly(d)
+    else d.setDate(d.getDate() + (recurrence === 'weekly' ? 7 : 1))
+    guard++
+  }
+  // Guard exhaustion (an extremely stale reminder): schedule a single next
+  // occurrence strictly after `from` rather than returning a still-past date.
+  if (d <= from) {
+    if (recurrence === 'monthly') d = advanceMonthly(new Date(from))
+    else d = new Date(from.getTime() + (recurrence === 'weekly' ? 7 : 1) * 86400000)
+  }
+  return d.toISOString()
 }
 
 // Format date for input field (using local timezone)
@@ -94,6 +145,73 @@ const formatReminderDate = (dateString) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+// Aggregate every active reminder (task + subtask + today-item) across all
+// projects into a flat list for the Upcoming agenda. Task/subtask objects don't
+// carry project_id, so the project is taken from the enclosing loop; today items
+// carry projectId + sourceTaskId (legacy: taskId).
+const collectUpcomingReminders = (projects, todayItems) => {
+  const out = []
+  for (const project of (projects || [])) {
+    const stages = project.stages || []
+    for (let si = 0; si < stages.length; si++) {
+      const stage = stages[si]
+      for (const task of (stage.tasks || [])) {
+        if (task.reminder_date && !task.is_completed) {
+          out.push({ key: `task-${task.id}`, kind: 'task', title: task.title, reminder_date: task.reminder_date, project, stageName: stage.name, navTask: task, navStageIndex: si })
+        }
+        for (const st of (task.subtasks || [])) {
+          if (st.reminder_date && !st.is_completed) {
+            out.push({ key: `subtask-${st.id}`, kind: 'subtask', title: st.title, parentTitle: task.title, reminder_date: st.reminder_date, project, stageName: stage.name, navTask: task, navStageIndex: si })
+          }
+        }
+      }
+    }
+  }
+  for (const it of (todayItems || [])) {
+    if (!it.reminder_date || it.is_done) continue
+    const project = it.projectId ? (projects || []).find(p => p.id === it.projectId) : null
+    const srcTaskId = it.sourceTaskId || it.taskId || null
+    let navTask = null, navStageIndex = null
+    if (project && srcTaskId) {
+      const stages = project.stages || []
+      for (let si = 0; si < stages.length; si++) {
+        const t = (stages[si].tasks || []).find(x => x.id === srcTaskId)
+        if (t) { navTask = t; navStageIndex = si; break }
+      }
+    }
+    out.push({ key: `today-${it.id}`, kind: 'today', title: it.title, reminder_date: it.reminder_date, project, navTask, navStageIndex })
+  }
+  return out
+}
+
+// Bucket the collected reminders into day groups (Overdue / Today / Tomorrow /
+// This week / Later) using local-day boundaries; drop empty groups.
+const groupUpcomingByDay = (items) => {
+  const now = new Date()
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const startTomorrow = new Date(startToday); startTomorrow.setDate(startTomorrow.getDate() + 1)
+  const startDayAfter = new Date(startToday); startDayAfter.setDate(startDayAfter.getDate() + 2)
+  const endThisWeek = new Date(startToday); endThisWeek.setDate(endThisWeek.getDate() + 7)
+  const groups = [
+    { id: 'overdue', label: 'Overdue', items: [] },
+    { id: 'today', label: 'Today', items: [] },
+    { id: 'tomorrow', label: 'Tomorrow', items: [] },
+    { id: 'week', label: 'This week', items: [] },
+    { id: 'later', label: 'Later', items: [] },
+  ]
+  const byId = Object.fromEntries(groups.map(g => [g.id, g]))
+  for (const item of items) {
+    const d = new Date(item.reminder_date)
+    if (d < now) byId.overdue.items.push(item)
+    else if (d < startTomorrow) byId.today.items.push(item)
+    else if (d < startDayAfter) byId.tomorrow.items.push(item)
+    else if (d < endThisWeek) byId.week.items.push(item)
+    else byId.later.items.push(item)
+  }
+  for (const g of groups) g.items.sort((a, b) => new Date(a.reminder_date) - new Date(b.reminder_date))
+  return groups.filter(g => g.items.length > 0)
+}
+
 // Format relative date (e.g., "2h ago", "3d ago", "Jan 5")
 const formatRelativeDate = (dateString) => {
   if (!dateString) return null
@@ -130,18 +248,139 @@ const getProjectLatestUpdatedAt = (project) => {
   if (!project) return null
   let latest = project.updated_at || project.created_at || null
   try {
-    (project.stages || []).forEach(stage => {
-      (stage.tasks || []).forEach(task => {
+    for (const stage of (project.stages || [])) {
+      for (const task of (stage.tasks || [])) {
         if (task.updated_at && (!latest || new Date(task.updated_at) > new Date(latest))) latest = task.updated_at
-          (task.subtasks || []).forEach(st => {
-            if (st.updated_at && (!latest || new Date(st.updated_at) > new Date(latest))) latest = st.updated_at
-          })
-      })
-    })
+        for (const st of (task.subtasks || [])) {
+          if (st.updated_at && (!latest || new Date(st.updated_at) > new Date(latest))) latest = st.updated_at
+        }
+      }
+    }
   } catch (e) {
     // ignore
   }
   return latest
+}
+
+// ============================================
+// PROJECT EXPORT (Markdown + printable PDF)
+// Pure, client-side helpers — no deps, no network.
+// ============================================
+const exportFilename = (project, ext) => {
+  const base = (project?.title || 'project').trim().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').toLowerCase() || 'project'
+  return `${base}.${ext}`
+}
+const sortTasksForExport = (tasks = []) => [...tasks].sort((a, b) => {
+  if (a.is_completed !== b.is_completed) return a.is_completed ? 1 : -1
+  if ((a.order_index || 0) !== (b.order_index || 0)) return (a.order_index || 0) - (b.order_index || 0)
+  return new Date(b.created_at || 0) - new Date(a.created_at || 0)
+})
+const sortSubtasksForExport = (subs = []) => [...subs].sort((a, b) => (a.order_index || 0) - (b.order_index || 0))
+const fmtAbs = (d) => d ? new Date(d).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : ''
+const escHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const safeHttp = (u) => /^https?:\/\//i.test(u || '')
+
+const buildMarkdown = (project) => {
+  const lines = []
+  const stages = project.stages || []
+  const curIdx = project.current_stage_index ?? 0
+  lines.push(`# ${(project.emoji || '').trim()} ${project.title}`.trim())
+  lines.push('')
+  lines.push(`**Progress:** ${Math.round(getProgress(project) * 100)}% · **Current stage:** ${stages[curIdx]?.name || '—'}`)
+  if (project.created_at) lines.push(`**Created:** ${fmtAbs(project.created_at)}`)
+  lines.push(`**Exported:** ${fmtAbs(new Date().toISOString())}`)
+  lines.push('')
+  stages.forEach((stage, i) => {
+    lines.push(`## ${stage.name}${i === curIdx ? ' _(current)_' : ''}`)
+    const tasks = sortTasksForExport(stage.tasks)
+    if (!tasks.length) { lines.push('_No tasks._'); lines.push(''); return }
+    for (const task of tasks) {
+      let row = `- [${task.is_completed ? 'x' : ' '}] ${task.title}`
+      if (task.reminder_date) row += `  ⏰ ${fmtAbs(task.reminder_date)}`
+      if (task.tags?.length) row += `  ${task.tags.map(t => '`' + t.name + '`').join(' ')}`
+      lines.push(row)
+      if (task.description && task.description.trim()) {
+        for (const l of task.description.split('\n')) lines.push(`  > ${l}`)
+      }
+      for (const link of (task.links || [])) {
+        lines.push(`  - 🔗 ${link.label ? `[${link.label}](${link.url})` : link.url}`)
+      }
+      for (const st of sortSubtasksForExport(task.subtasks)) {
+        let sub = `  - [${st.is_completed ? 'x' : ' '}] ${st.title}`
+        if (st.reminder_date) sub += `  ⏰ ${fmtAbs(st.reminder_date)}`
+        lines.push(sub)
+      }
+    }
+    lines.push('')
+  })
+  return lines.join('\n')
+}
+
+const downloadMarkdown = (project) => {
+  const blob = new Blob([buildMarkdown(project)], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = exportFilename(project, 'md')
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+const buildReportHtml = (project) => {
+  const stages = project.stages || []
+  const curIdx = project.current_stage_index ?? 0
+  const stageHtml = stages.map((stage, i) => {
+    const tasks = sortTasksForExport(stage.tasks)
+    const tasksHtml = tasks.length ? tasks.map(task => {
+      const rem = task.reminder_date ? `<span class="rem">⏰ ${escHtml(fmtAbs(task.reminder_date))}</span>` : ''
+      const tags = (task.tags || []).map(t => `<span class="tag">${escHtml(t.name)}</span>`).join('')
+      const desc = task.description && task.description.trim() ? `<div class="desc">${escHtml(task.description).replace(/\n/g, '<br>')}</div>` : ''
+      const links = (task.links || []).length ? `<ul class="links">${task.links.map(l => safeHttp(l.url)
+        ? `<li>🔗 <a href="${escHtml(l.url)}">${escHtml(l.label || l.url)}</a></li>`
+        : `<li>🔗 ${escHtml(l.label || l.url)}</li>`).join('')}</ul>` : ''
+      const subs = sortSubtasksForExport(task.subtasks)
+      const subsHtml = subs.length ? `<ul class="subs">${subs.map(st => `<li class="${st.is_completed ? 'done' : ''}">${st.is_completed ? '☑' : '☐'} ${escHtml(st.title)}${st.reminder_date ? ` <span class="rem">⏰ ${escHtml(fmtAbs(st.reminder_date))}</span>` : ''}</li>`).join('')}</ul>` : ''
+      return `<li class="task ${task.is_completed ? 'done' : ''}">${task.is_completed ? '☑' : '☐'} ${escHtml(task.title)} ${rem} ${tags}${desc}${links}${subsHtml}</li>`
+    }).join('') : '<li class="empty">No tasks.</li>'
+    return `<section class="stage"><h2>${escHtml(stage.name)}${i === curIdx ? ' <span class="cur">current</span>' : ''}</h2><ul class="tasks">${tasksHtml}</ul></section>`
+  }).join('')
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escHtml(project.title)}</title><style>
+    body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#111;max-width:720px;margin:0 auto;padding:24px;line-height:1.5}
+    h1{font-size:24px;margin:0 0 4px;border-bottom:3px solid #111;padding-bottom:8px}
+    .meta{color:#555;font-size:13px;margin:8px 0 24px}
+    h2{font-size:16px;margin:24px 0 8px;page-break-after:avoid}
+    .cur{font-size:11px;font-weight:600;color:#2563eb;background:#dbeafe;border-radius:6px;padding:1px 6px;margin-left:6px}
+    ul.tasks{list-style:none;padding:0;margin:0}
+    li.task{page-break-inside:avoid;margin:6px 0;font-size:14px}
+    li.done{color:#9ca3af;text-decoration:line-through}
+    li.done .rem,li.done .tag{text-decoration:none}
+    .rem{color:#b45309;font-size:12px;margin-left:6px}
+    .tag{background:#eef2ff;color:#3730a3;border-radius:6px;padding:1px 6px;font-size:11px;margin-left:4px}
+    .desc{color:#444;font-size:13px;margin:2px 0 2px 22px;white-space:normal}
+    ul.subs,ul.links{margin:2px 0 2px 22px;padding:0;list-style:none;font-size:13px}
+    ul.subs li{color:#374151}
+    .empty{color:#9ca3af;font-style:italic}
+    a{color:#2563eb}
+    @page{margin:1.5cm}
+    @media print{body{padding:0}}
+  </style></head><body>
+    <h1>${escHtml((project.emoji || '').trim())} ${escHtml(project.title)}</h1>
+    <div class="meta">${Math.round(getProgress(project) * 100)}% complete · Current stage: ${escHtml(stages[curIdx]?.name || '—')}${project.created_at ? ` · Created ${escHtml(fmtAbs(project.created_at))}` : ''} · Exported ${escHtml(fmtAbs(new Date().toISOString()))}</div>
+    ${stageHtml}
+  </body></html>`
+}
+
+const printProject = (project) => {
+  const win = window.open('', '_blank', 'width=800,height=1000')
+  if (!win) return false
+  win.document.open()
+  win.document.write(buildReportHtml(project))
+  win.document.close()
+  win.focus()
+  setTimeout(() => win.print(), 300)
+  return true
 }
 
 // Local storage helpers for demo mode
@@ -219,8 +458,10 @@ const restoreTaskInDb = async (task, stageId) => {
     stage_id: stageId,
     title: task.title,
     description: task.description || '',
+    links: task.links || [],
     is_completed: !!task.is_completed,
     reminder_date: task.reminder_date || null,
+    reminder_recurrence: task.reminder_recurrence || null,
     order_index: task.order_index ?? 0,
     created_by: task.created_by || null,
     modified_by: task.modified_by || null
@@ -241,6 +482,7 @@ const restoreSubtaskInDb = async (sub, taskId) => {
     title: sub.title,
     is_completed: !!sub.is_completed,
     reminder_date: sub.reminder_date || null,
+    reminder_recurrence: sub.reminder_recurrence || null,
     order_index: sub.order_index ?? 0,
     created_by: sub.created_by || null,
     modified_by: sub.modified_by || null
@@ -634,6 +876,7 @@ function GlobalSearch({ projects, onNavigate }) {
     <div ref={containerRef} className="relative flex-1 max-w-md">
       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
       <input
+        id="global-search"
         ref={inputRef}
         type="text"
         placeholder="Search projects, tasks, subtasks..."
@@ -1148,74 +1391,358 @@ function NotificationSettingsPanel({ settings, onUpdateSettings, onClose, isLoad
 // ============================================
 // REMINDER DATE PICKER
 // ============================================
-function ReminderPicker({ value, onChange, compact = false, isShared = false, defaultScope = 'all' }) {
-  // onChange may accept (date) or (date, scope)
-  // scope: 'all' (notify collaborators) | 'me' (only me)
-  // To enable collaborator notifications, callers should pass `isShared` and handle scope in their update handlers.
-  // Backwards compatible: if caller expects only date, we'll call with single arg.
+const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
+
+// Round a date up to the next `step` minutes (used as a sensible default reminder time)
+const roundUpMinutes = (date, step = 30) => {
+  const d = new Date(date)
+  d.setSeconds(0, 0)
+  const rem = d.getMinutes() % step
+  if (rem !== 0) d.setMinutes(d.getMinutes() + (step - rem))
+  return d
+}
+
+function ReminderPicker({ value, onChange, compact = false, isShared = false, defaultScope = 'all', recurrence: recurrenceProp }) {
+  // onChange may accept (date) or (date, scope, recurrence). scope: 'all' | 'me'.
+  // Backwards compatible: callers expecting only the date receive a single arg.
   const [isOpen, setIsOpen] = useState(false)
-  const [pendingValue, setPendingValue] = useState('')
   const [scope, setScope] = useState(defaultScope)
+  const [recurrence, setRecurrence] = useState(recurrenceProp ?? 'none')
+  const [draft, setDraft] = useState(() => roundUpMinutes(new Date()))     // pending Date selection
+  const [viewMonth, setViewMonth] = useState(() => new Date())             // first-of-month shown in the calendar
+  const [placement, setPlacement] = useState(null)                         // {top,left,width} | 'sheet' | null (measuring)
   const buttonRef = useRef(null)
+  const panelRef = useRef(null)
+  const mounted = useMounted()
+
   const hasReminder = !!value
   const overdue = isOverdue(value)
-
-  // Initialize pending value when opening or when value changes
-  useEffect(() => {
-    if (isOpen) {
-      setPendingValue(formatDateForInput(value) || formatDateForInput(new Date().toISOString()))
-    }
-  }, [isOpen, value])
-
-  // Get the user's timezone for display
   const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const showRecurrence = recurrenceProp != null   // Today items omit the prop -> no Repeat row
 
-  // Quick set helper - uses local time correctly
-  const handleQuickSet = (hours) => {
-    const now = new Date()
-    const futureDate = new Date(now.getTime() + hours * 60 * 60 * 1000)
-    // default to notify all unless caller expects scope handling
-    if (onChange.length >= 2) {
-      onChange(futureDate.toISOString(), defaultScope)
-    } else {
-      onChange(futureDate.toISOString())
-    }
-    setIsOpen(false)
-  }
+  // Initialize the draft whenever the popover opens
+  useEffect(() => {
+    if (!isOpen) return
+    const base = value ? new Date(value) : roundUpMinutes(new Date())
+    setDraft(base)
+    setViewMonth(new Date(base.getFullYear(), base.getMonth(), 1))
+    setScope(defaultScope)
+    setRecurrence(recurrenceProp ?? 'none')
+    setPlacement(null)
+  }, [isOpen, value, defaultScope, recurrenceProp])
 
-  // Confirm the pending value
-  const handleConfirm = () => {
-    if (pendingValue) {
-      // Parse the local datetime string and convert to ISO
-      const localDate = new Date(pendingValue)
-      if (onChange.length >= 2) {
-        onChange(localDate.toISOString(), scope)
-      } else {
-        onChange(localDate.toISOString())
+  // Close on Escape while open
+  useEffect(() => {
+    if (!isOpen) return
+    const onKey = (e) => { if (e.key === 'Escape') setIsOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isOpen])
+
+  // Position the popover so it always stays fully on-screen; use a bottom sheet on phones
+  React.useLayoutEffect(() => {
+    if (!isOpen) return
+    const compute = () => {
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      if (vw <= 640) { setPlacement('sheet'); return }
+      const rect = buttonRef.current?.getBoundingClientRect()
+      const W = 320
+      const margin = 8
+      const panelH = panelRef.current?.offsetHeight || 460
+      let left = rect ? rect.left : margin
+      left = Math.max(margin, Math.min(left, vw - W - margin))
+      let top = rect ? rect.bottom + margin : 80
+      if (rect && top + panelH > vh - margin) {
+        const above = rect.top - margin - panelH
+        top = above >= margin ? above : Math.max(margin, vh - panelH - margin)
       }
+      setPlacement({ top, left, width: W })
     }
+    compute()
+    // Re-measure once the panel has painted (height is known) and on viewport changes
+    const raf = requestAnimationFrame(compute)
+    window.addEventListener('resize', compute)
+    window.addEventListener('scroll', compute, true)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', compute)
+      window.removeEventListener('scroll', compute, true)
+    }
+  }, [isOpen])
+
+  // Emit respecting the caller's arity. Arity-1 callers (Today item) get only the
+  // date; arity-2 callers get (date, scope, recurrence) — the 3rd arg is harmless
+  // to callers that ignore it, and keeps the existing arity gate intact.
+  const emit = (isoOrNull, sc, rec) => {
+    if (onChange.length >= 2) onChange(isoOrNull, sc ?? scope, rec ?? recurrence)
+    else onChange(isoOrNull)
     setIsOpen(false)
   }
 
-  // Format time for preview display
-  const formatPreviewTime = (dateString) => {
-    if (!dateString) return ''
-    const date = new Date(dateString)
-    return date.toLocaleString(undefined, {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    })
-  }
+  // Derived time parts from the draft
+  const h24 = draft.getHours()
+  const hour12 = ((h24 + 11) % 12) + 1
+  const minute = draft.getMinutes()
+  const period = h24 >= 12 ? 'PM' : 'AM'
 
-  const mounted = useMounted()
+  const setDatePart = (y, m, d) => setDraft(prev => {
+    const n = new Date(prev); n.setFullYear(y, m, d); return n
+  })
+  const bumpHour = (delta) => setDraft(prev => {
+    const n = new Date(prev); n.setHours(((n.getHours() + delta) % 24 + 24) % 24); return n
+  })
+  const bumpMinute = (delta) => setDraft(prev => {
+    const n = new Date(prev); n.setMinutes(n.getMinutes() + delta * 5); n.setSeconds(0, 0); return n
+  })
+  const togglePeriod = () => setDraft(prev => {
+    const n = new Date(prev); n.setHours((n.getHours() + 12) % 24); return n
+  })
+
+  // Quick presets compute their date at click time so they're always fresh
+  const applyPreset = (fn) => {
+    const d = fn(new Date())
+    d.setSeconds(0, 0)
+    emit(d.toISOString(), scope, recurrence)
+  }
+  const presets = [
+    { label: 'In 1 hour', make: (now) => new Date(now.getTime() + 60 * 60 * 1000) },
+    { label: 'In 3 hours', make: (now) => new Date(now.getTime() + 3 * 60 * 60 * 1000) },
+    {
+      label: 'This evening', make: (now) => {
+        const d = new Date(now); d.setHours(18, 0, 0, 0)
+        if (d <= now) d.setDate(d.getDate() + 1)
+        return d
+      }
+    },
+    {
+      label: 'Tomorrow 9 AM', make: (now) => {
+        const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return d
+      }
+    },
+    { label: 'Next week', make: (now) => new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) },
+  ]
+
+  // Calendar grid for the currently viewed month
+  const vy = viewMonth.getFullYear()
+  const vm = viewMonth.getMonth()
+  const firstWeekday = new Date(vy, vm, 1).getDay()
+  const daysInMonth = new Date(vy, vm + 1, 0).getDate()
+  const today0 = new Date(); today0.setHours(0, 0, 0, 0)
+  const canGoPrev = new Date(vy, vm, 1) > new Date(today0.getFullYear(), today0.getMonth(), 1)
+  const shiftMonth = (delta) => setViewMonth(new Date(vy, vm + delta, 1))
+  const cells = []
+  for (let i = 0; i < firstWeekday; i++) cells.push(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+
+  const relativeHint = formatReminderDate(draft.toISOString())
+  const previewText = draft.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+  })
+
+  const isSheet = placement === 'sheet'
+  const panelStyle = isSheet
+    ? { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 9999 }
+    : placement
+      ? { position: 'fixed', top: placement.top, left: placement.left, width: placement.width, zIndex: 9999 }
+      : { position: 'fixed', top: -9999, left: -9999, width: 320, visibility: 'hidden', zIndex: 9999 }
+
+  const StepBtn = ({ onClick, children, label }) => (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      className="w-9 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 active:bg-gray-200 transition-colors"
+    >
+      {children}
+    </button>
+  )
+
+  const panel = (
+    <div
+      ref={panelRef}
+      style={panelStyle}
+      className={`bg-white border border-gray-200 shadow-2xl animate-fade-in ${isSheet ? 'rounded-t-2xl w-full max-h-[88vh] overflow-y-auto pb-[env(safe-area-inset-bottom)]' : 'rounded-2xl'}`}
+      onClick={e => e.stopPropagation()}
+      role="dialog"
+      aria-label="Set reminder"
+    >
+      {isSheet && <div className="mx-auto mt-2 mb-1 h-1.5 w-10 rounded-full bg-gray-300" />}
+      <div className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-semibold text-gray-800">Set reminder</span>
+          <span className="text-[10px] text-gray-400">{userTimezone}</span>
+        </div>
+
+        {/* Quick presets */}
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {presets.map(p => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => applyPreset(p.make)}
+              className="px-2.5 py-1.5 text-xs font-medium bg-gray-100 hover:bg-blue-50 hover:text-blue-700 rounded-lg text-gray-700 transition-colors"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Calendar */}
+        <div className="rounded-xl border border-gray-100 p-2">
+          <div className="flex items-center justify-between px-1 mb-1">
+            <button
+              type="button"
+              onClick={() => canGoPrev && shiftMonth(-1)}
+              disabled={!canGoPrev}
+              aria-label="Previous month"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-sm font-medium text-gray-800">
+              {viewMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' })}
+            </span>
+            <button
+              type="button"
+              onClick={() => shiftMonth(1)}
+              aria-label="Next month"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-7 gap-0.5 mb-1">
+            {WEEKDAY_LABELS.map(w => (
+              <div key={w} className="text-center text-[10px] font-semibold text-gray-400 py-1">{w}</div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-0.5">
+            {cells.map((d, i) => {
+              if (d === null) return <div key={`e${i}`} />
+              const cellDate = new Date(vy, vm, d)
+              const isPast = cellDate < today0
+              const isSelected = draft.getFullYear() === vy && draft.getMonth() === vm && draft.getDate() === d
+              const isToday = cellDate.getTime() === today0.getTime()
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  disabled={isPast}
+                  onClick={() => setDatePart(vy, vm, d)}
+                  className={`h-9 rounded-lg text-sm flex items-center justify-center transition-colors ${
+                    isSelected
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : isPast
+                        ? 'text-gray-300 cursor-not-allowed'
+                        : isToday
+                          ? 'text-blue-600 font-semibold ring-1 ring-inset ring-blue-200 hover:bg-blue-50'
+                          : 'text-gray-700 hover:bg-gray-100'
+                  }`}
+                >
+                  {d}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Time */}
+        <div className="mt-3 flex items-center justify-center gap-1 rounded-xl border border-gray-100 py-2">
+          <Clock className="w-4 h-4 text-gray-400 mr-1" />
+          <div className="flex flex-col items-center">
+            <StepBtn onClick={() => bumpHour(1)} label="Increase hour"><ChevronUp className="w-4 h-4" /></StepBtn>
+            <span className="w-9 text-center text-lg font-semibold text-gray-800 tabular-nums">{String(hour12).padStart(2, '0')}</span>
+            <StepBtn onClick={() => bumpHour(-1)} label="Decrease hour"><ChevronDown className="w-4 h-4" /></StepBtn>
+          </div>
+          <span className="text-lg font-semibold text-gray-400 pb-0.5">:</span>
+          <div className="flex flex-col items-center">
+            <StepBtn onClick={() => bumpMinute(1)} label="Increase minute"><ChevronUp className="w-4 h-4" /></StepBtn>
+            <span className="w-9 text-center text-lg font-semibold text-gray-800 tabular-nums">{String(minute).padStart(2, '0')}</span>
+            <StepBtn onClick={() => bumpMinute(-1)} label="Decrease minute"><ChevronDown className="w-4 h-4" /></StepBtn>
+          </div>
+          <button
+            type="button"
+            onClick={togglePeriod}
+            className="ml-2 px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-sm font-semibold text-gray-700 transition-colors"
+          >
+            {period}
+          </button>
+        </div>
+
+        {/* Preview */}
+        <div className="mt-3 flex items-center justify-between px-3 py-2 bg-blue-50 rounded-lg">
+          <span className="text-xs font-medium text-blue-700">{previewText}</span>
+          {relativeHint && <span className="text-[11px] text-blue-500">{relativeHint}</span>}
+        </div>
+
+        {/* Repeat (tasks/subtasks only) */}
+        {showRecurrence && (
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="text-gray-500 flex items-center gap-1"><Repeat className="w-3.5 h-3.5" /> Repeat</span>
+            <div className="inline-flex rounded-lg bg-gray-100 p-1">
+              {RECURRENCE_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setRecurrence(opt.value)}
+                  className={`px-2.5 py-1 rounded-md transition-colors ${recurrence === opt.value ? 'bg-white shadow text-gray-900' : 'text-gray-600'}`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notify scope (shared projects only) */}
+        {isShared && (
+          <div className="mt-3 flex items-center gap-2 text-xs">
+            <span className="text-gray-500">Notify</span>
+            <div className="inline-flex rounded-lg bg-gray-100 p-1">
+              <button type="button" onClick={() => setScope('all')} className={`px-2.5 py-1 rounded-md transition-colors ${scope === 'all' ? 'bg-white shadow text-gray-900' : 'text-gray-600'}`}>Everyone</button>
+              <button type="button" onClick={() => setScope('me')} className={`px-2.5 py-1 rounded-md transition-colors ${scope === 'me' ? 'bg-white shadow text-gray-900' : 'text-gray-600'}`}>Only me</button>
+            </div>
+          </div>
+        )}
+
+        {/* Actions — pinned to the bottom of the sheet on mobile so they're always reachable */}
+        <div className={isSheet ? 'sticky bottom-0 -mx-4 mt-4 px-4 pt-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] bg-white border-t border-gray-100' : 'mt-4'}>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => emit(draft.toISOString(), scope, recurrence)}
+              className="flex-1 px-3 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 active:bg-blue-800 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Check className="w-4 h-4" /> {hasReminder ? 'Update reminder' : 'Set reminder'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsOpen(false)}
+              className="px-4 py-2.5 text-gray-600 text-sm font-medium hover:bg-gray-100 rounded-xl transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+
+          {hasReminder && (
+            <button
+              type="button"
+              onClick={() => emit(null, scope, 'none')}
+              className="mt-2 w-full px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+            >
+              Remove reminder
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <div className="relative" ref={buttonRef}>
       <button
+        type="button"
         onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
         className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs transition-colors ${overdue
           ? 'bg-red-100 text-red-600 hover:bg-red-200'
@@ -1232,114 +1759,11 @@ function ReminderPicker({ value, onChange, compact = false, isShared = false, de
       </button>
       {mounted && isOpen && typeof document !== 'undefined' && createPortal(
         <>
-          <div className="fixed inset-0 z-[9998]" onClick={() => setIsOpen(false)} />
           <div
-            style={{
-              position: 'fixed',
-              zIndex: 9999,
-              top: buttonRef.current ? buttonRef.current.getBoundingClientRect().bottom + 8 : 100,
-              left: buttonRef.current ? Math.max(8, Math.min(
-                buttonRef.current.getBoundingClientRect().left,
-                window.innerWidth - 292
-              )) : 8,
-              maxHeight: 'calc(100vh - 40px)',
-              overflowY: 'auto'
-            }}
-            className="w-72 bg-white rounded-xl shadow-2xl border border-gray-200 p-4 animate-fade-in"
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-3">
-              <label className="text-sm font-medium text-gray-800">Set Reminder</label>
-              <span className="text-[10px] text-gray-400">{userTimezone}</span>
-            </div>
-
-            <input
-              type="datetime-local"
-              value={pendingValue}
-              onChange={(e) => setPendingValue(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && e.shiftKey) {
-                  onConfirm(pendingValue)
-                }
-                if (e.key === 'Escape') setIsOpen(false)
-              }}
-              className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-400 focus:border-transparent"
-            />
-
-            {/* Preview of selected time */}
-            {pendingValue && (
-              <div className="mt-2 px-2 py-1.5 bg-blue-50 rounded-lg">
-                <p className="text-xs text-blue-700 font-medium">
-                  {formatPreviewTime(pendingValue)}
-                </p>
-              </div>
-            )}
-
-            {/* Action buttons */}
-            {isShared && (
-              <div className="mt-2 flex items-center gap-2 text-xs">
-                <span className="text-gray-500">Notify</span>
-                <div className="inline-flex rounded-lg bg-gray-100 p-1">
-                  <button
-                    onClick={() => setScope('all')}
-                    className={`px-2 py-1 rounded-md ${scope === 'all' ? 'bg-white shadow text-gray-900' : 'text-gray-600'}`}
-                  >
-                    All
-                  </button>
-                  <button
-                    onClick={() => setScope('me')}
-                    className={`px-2 py-1 rounded-md ${scope === 'me' ? 'bg-white shadow text-gray-900' : 'text-gray-600'}`}
-                  >
-                    Only me
-                  </button>
-                </div>
-              </div>
-            )}
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={handleConfirm}
-                disabled={!pendingValue}
-                className="flex-1 px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Done
-              </button>
-              <button
-                onClick={() => setIsOpen(false)}
-                className="px-3 py-2 text-gray-600 text-sm hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-
-            {hasReminder && (
-              <button
-                onClick={() => { onChange(null); setIsOpen(false); }}
-                className="mt-2 w-full px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-              >
-                Remove reminder
-              </button>
-            )}
-
-            <div className="mt-3 pt-3 border-t border-gray-100">
-              <p className="text-[10px] text-gray-400 mb-2">Quick set:</p>
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  { label: '1h', hours: 1 },
-                  { label: '3h', hours: 3 },
-                  { label: 'Tomorrow', hours: 24 },
-                  { label: '1 week', hours: 168 }
-                ].map(opt => (
-                  <button
-                    key={opt.label}
-                    onClick={() => handleQuickSet(opt.hours)}
-                    className="px-3 py-1.5 text-xs bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-700 font-medium transition-colors"
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
+            className={`fixed inset-0 z-[9998] ${isSheet ? 'bg-black/30' : ''}`}
+            onClick={() => setIsOpen(false)}
+          />
+          {panel}
         </>,
         document.body
       )}
@@ -1667,7 +2091,7 @@ function Header({ projects, onSearchNavigate, notifications, onMarkNotificationR
 
   return (
     <>
-      <header className="bg-white/80 backdrop-blur-lg sticky top-0 z-40">
+      <header className="bg-white/95 backdrop-blur-lg sticky top-0 z-40 border-b border-gray-100/80">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16 gap-2 sm:gap-4">
             <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
@@ -1689,6 +2113,7 @@ function Header({ projects, onSearchNavigate, notifications, onMarkNotificationR
               {/* Notifications Bell */}
               <div className="relative">
                 <button
+                  id="notifications-btn"
                   onClick={(e) => {
                     const rect = e.currentTarget.getBoundingClientRect();
                     setNotifAnchor(rect);
@@ -1823,7 +2248,7 @@ function Header({ projects, onSearchNavigate, notifications, onMarkNotificationR
 // ============================================
 function TabNav({ tab, setTab }) {
   return (
-    <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-16 z-30">
+    <div className="bg-white/95 backdrop-blur-sm border-b border-gray-200 sticky top-16 z-30">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <nav className="flex gap-1">
           {[
@@ -2065,6 +2490,78 @@ const TodayItem = React.memo(({
   )
 })
 
+// Cross-project agenda of every active reminder, grouped by day. Read-only.
+function UpcomingAgenda() {
+  const { projects, todayItems, setSelectedProject, setSelectedTask, setView } = useApp()
+  const groups = useMemo(() => groupUpcomingByDay(collectUpcomingReminders(projects, todayItems)), [projects, todayItems])
+
+  const openItem = (item) => {
+    if (item.navTask && item.project) {
+      setSelectedProject(item.project)
+      setSelectedTask({ task: item.navTask, stageIndex: item.navStageIndex })
+      setView('task')
+    } else if (item.project) {
+      setSelectedProject(item.project)
+      setView('project')
+    }
+  }
+
+  if (groups.length === 0) {
+    return (
+      <div className="p-12 text-center text-gray-400 border-2 border-dashed border-gray-100 rounded-2xl">
+        No upcoming reminders. Set a reminder on a task, subtask, or today item to see it here.
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6">
+      {groups.map(group => (
+        <div key={group.id}>
+          <div className={`flex items-center gap-2 mb-2 text-xs font-semibold uppercase tracking-wide ${group.id === 'overdue' ? 'text-red-600' : 'text-gray-500'}`}>
+            {group.label}
+            <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px]">{group.items.length}</span>
+          </div>
+          <div className="space-y-2">
+            {group.items.map(item => {
+              const overdue = isOverdue(item.reminder_date)
+              const clickable = !!(item.navTask || item.project)
+              return (
+                <div
+                  key={item.key}
+                  onClick={() => clickable && openItem(item)}
+                  className={`glass-card p-3 rounded-lg flex items-center justify-between ${clickable ? 'cursor-pointer glass-card-hover' : ''}`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-medium text-gray-900 truncate">
+                      {item.kind === 'subtask' ? `${item.parentTitle} — ${item.title}` : item.title}
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {item.project && (
+                        <span className="text-[11px] text-gray-500 flex items-center gap-1 truncate">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
+                          {item.project.title}
+                        </span>
+                      )}
+                      <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                        {item.kind === 'today' ? 'Today item' : item.kind}
+                      </span>
+                    </div>
+                  </div>
+                  <div className={`text-[10px] flex items-center gap-1 flex-shrink-0 ml-2 ${overdue ? 'text-red-600' : 'text-amber-600'}`}>
+                    <Clock className="w-3 h-3" />
+                    {formatReminderDate(item.reminder_date)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function TodayView() {
   const { todayItems, addLocalTodayTask, addToToday, addSubtaskToToday, removeTodayItem, removeTodayItems, duplicateTodayItems, reorderToday, projects, toggleTodayDone, setSelectedTask, setSelectedProject, setView, setTodayItems, saveTodayItems, showToast, user, demoMode, reloadProjects, setProjects } = useApp()
   const mounted = useMounted()
@@ -2087,6 +2584,8 @@ function TodayView() {
     if (todaySubtab === 'scheduled') return todayItems.filter(i => i.reminder_date && !i.is_done)
     return todayItems
   }, [todayItems, todaySubtab])
+
+  const upcomingCount = useMemo(() => collectUpcomingReminders(projects, todayItems).length, [projects, todayItems])
 
   const todaySearchQuery = todaySearch.trim().toLowerCase()
   const filteredTodayItems = useMemo(() => {
@@ -2367,6 +2866,7 @@ function TodayView() {
       <div className="flex border-b border-gray-200 mb-6 gap-6">
         {[
           { id: 'active', label: 'Active', count: todayItems.filter(i => !i.is_done).length },
+          { id: 'upcoming', label: 'Upcoming', count: upcomingCount },
           { id: 'scheduled', label: 'Scheduled', count: todayItems.filter(i => i.reminder_date && !i.is_done).length },
           { id: 'completed', label: 'Completed', count: todayItems.filter(i => i.is_done).length },
           { id: 'all', label: 'All', count: todayItems.length }
@@ -2383,6 +2883,10 @@ function TodayView() {
         ))}
       </div>
 
+      {todaySubtab === 'upcoming' ? (
+        <UpcomingAgenda />
+      ) : (
+        <>
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
         <div className="relative w-full sm:w-64">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -2436,6 +2940,8 @@ function TodayView() {
           })
         )}
       </div>
+        </>
+      )}
 
       {/* Duplicate Check Popup */}
       <DuplicatePopup />
@@ -2685,8 +3191,10 @@ function ProjectsView() {
               stage_id: createdStage.id,
               title: task.title,
               description: task.description || '',
+              links: task.links || [],
               is_completed: task.is_completed || false,
               reminder_date: task.reminder_date,
+              reminder_recurrence: task.reminder_recurrence || null,
               order_index: task.order_index || 0
             })
             if (taskError || !createdTask) {
@@ -2840,8 +3348,10 @@ function ProjectsView() {
             stage_id: createdStage.id,
             title: task.title,
             description: task.description || '',
+            links: task.links || [],
             is_completed: task.is_completed || false,
             reminder_date: task.reminder_date,
+            reminder_recurrence: task.reminder_recurrence || null,
             order_index: task.order_index || 0
           })
         }
@@ -2940,7 +3450,7 @@ function ProjectsView() {
                   <Check className="w-3 h-3" />
                   <span className="hidden sm:inline">Select</span>
                 </button>
-                <button onClick={() => setShowCreate(true)} className="btn-gradient flex items-center gap-2 whitespace-nowrap text-sm sm:text-base px-3 sm:px-6 py-2 sm:py-3">
+                <button id="new-project-btn" onClick={() => setShowCreate(true)} className="btn-gradient flex items-center gap-2 whitespace-nowrap text-sm sm:text-base px-3 sm:px-6 py-2 sm:py-3">
                   <Plus className="w-4 h-4" />
                   <span className="hidden sm:inline">New Project</span>
                 </button>
@@ -3088,6 +3598,7 @@ function ProjectsView() {
           projects={sortedProjects}
           onReorder={handleReorder}
           onClose={() => setShowReorder(false)}
+          reorderLoading={reorderLoading}
         />
       )}
     </div>
@@ -3097,7 +3608,7 @@ function ProjectsView() {
 // ============================================
 // REORDER MODAL
 // ============================================
-function ReorderModal({ projects, onReorder, onClose }) {
+function ReorderModal({ projects, onReorder, onClose, reorderLoading = false }) {
   const [workingProjects, setWorkingProjects] = useState([...projects])
   const [draggedIndex, setDraggedIndex] = useState(null)
 
@@ -3128,7 +3639,6 @@ function ReorderModal({ projects, onReorder, onClose }) {
     setDraggedIndex(null)
   }
 
-  const { reorderLoading } = useApp();
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
@@ -4115,10 +4625,21 @@ function CreateProjectModal({ onClose }) {
   const { user, demoMode, profileReady } = useAuth()
   const [title, setTitle] = useState('')
   const [emoji, setEmoji] = useState('🧪')
-  const [stages, setStages] = useState(['Ideation', 'Experiments', 'Analysis', 'Writing', 'Publication'])
+  const [stages, setStages] = useState(DEFAULT_STAGES)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const [draggedIndex, setDraggedIndex] = useState(null)
+  const [selectedTemplateId, setSelectedTemplateId] = useState('blank')
+  const [titlePlaceholder, setTitlePlaceholder] = useState('Enter project title')
+
+  // Seed emoji + stages from a template. Deliberately does NOT touch `title`, so
+  // anything the user already typed is preserved.
+  const applyTemplate = (tpl) => {
+    setSelectedTemplateId(tpl.id)
+    setEmoji(tpl.emoji)
+    setStages([...tpl.stages])
+    setTitlePlaceholder(tpl.titlePlaceholder)
+  }
 
   const handleDragStart = (e, index) => {
     setDraggedIndex(index)
@@ -4252,10 +4773,29 @@ function CreateProjectModal({ onClose }) {
             </div>
           )}
           <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Start from a template</label>
+            <div className="grid grid-cols-2 gap-2">
+              {TEMPLATES.map(tpl => (
+                <button
+                  key={tpl.id}
+                  type="button"
+                  onClick={() => applyTemplate(tpl)}
+                  className={`text-left p-3 rounded-xl border-2 transition-all ${selectedTemplateId === tpl.id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 hover:border-brand-300'}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">{tpl.emoji}</span>
+                    <span className="text-sm font-medium text-gray-900">{tpl.name}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">{tpl.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Project Title</label>
             <input
               type="text"
-              placeholder="Enter project title"
+              placeholder={titlePlaceholder}
               value={title}
               onChange={e => setTitle(e.target.value)}
               onKeyDown={e => {
@@ -4353,13 +4893,15 @@ function CreateProjectModal({ onClose }) {
 // PROJECT DETAIL VIEW
 // ============================================
 function ProjectDetail() {
-  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef, registerUndo, reloadProjects } = useApp()
+  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef, registerUndo, reloadProjects, showToast } = useApp()
   const { demoMode, user } = useAuth()
   const currentUserName = user?.user_metadata?.name || user?.email || 'Unknown'
   const [previewIndex, setPreviewIndex] = useState(null)
   const [newTask, setNewTask] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showShare, setShowShare] = useState(false)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const exportBtnRef = useRef(null)
   const [activeTagPicker, setActiveTagPicker] = useState(null) // { taskId, subtaskId? }
   const dragTaskIndex = useRef(null)
   const dragSubtaskIndex = useRef(null)
@@ -4389,6 +4931,11 @@ function ProjectDetail() {
     dragSubtaskIndex.current = null
     dragSubtaskTaskId.current = null
   }
+
+  // Multi-select state for tasks (declared before any early return to keep hook order stable)
+  const [selectedTaskIds, setSelectedTaskIds] = React.useState(new Set())
+  const [isSelectionMode, setIsSelectionMode] = React.useState(false)
+  const lastSelectedIndex = React.useRef(null)
 
   if (!selectedProject) return null
 
@@ -4625,22 +5172,23 @@ function ProjectDetail() {
     setTimeout(() => deletedTaskIdsRef.current.delete(taskId), 8000)
   }
 
-  const updateTaskReminder = async (taskId, reminderDate, scope = 'all') => {
+  const updateTaskReminder = async (taskId, reminderDate, scope = 'all', recurrence = 'none') => {
     const now = new Date().toISOString()
     const userName = user?.user_metadata?.name || user?.email || 'Unknown'
     const task = stage.tasks.find(t => t.id === taskId)
+    const nextRecurrence = reminderDate ? recurrence : 'none'
     const updated = {
       ...project,
       stages: project.stages.map((s, i) =>
         i === stageIndex
-          ? { ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, reminder_date: reminderDate, updated_at: now, modified_by: user?.id, modified_by_name: userName } : t) }
+          ? { ...s, tasks: s.tasks.map(t => t.id === taskId ? { ...t, reminder_date: reminderDate, reminder_recurrence: nextRecurrence, updated_at: now, modified_by: user?.id, modified_by_name: userName } : t) }
           : s
       )
     }
     updateProject(updated)
 
     if (!demoMode) {
-      await db.updateTask(taskId, { reminder_date: reminderDate, modified_by: user?.id })
+      await db.updateTask(taskId, { reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id })
 
       // Notify collaborators about the reminder only if scope === 'all'
       if (isShared && reminderDate && task && scope === 'all') {
@@ -4683,11 +5231,12 @@ function ProjectDetail() {
     }
   }
 
-  const updateSubtaskReminder = async (taskId, subtaskId, reminderDate, scope = 'all') => {
+  const updateSubtaskReminder = async (taskId, subtaskId, reminderDate, scope = 'all', recurrence = 'none') => {
     const now = new Date().toISOString()
     const userName = user?.user_metadata?.name || user?.email || 'Unknown'
     const task = stage.tasks.find(t => t.id === taskId)
     const subtask = task?.subtasks?.find(s => s.id === subtaskId)
+    const nextRecurrence = reminderDate ? recurrence : 'none'
     const updated = {
       ...project,
       stages: project.stages.map((s, i) =>
@@ -4695,7 +5244,7 @@ function ProjectDetail() {
           ? {
             ...s, tasks: s.tasks.map(t =>
               t.id === taskId
-                ? { ...t, subtasks: t.subtasks.map(st => st.id === subtaskId ? { ...st, reminder_date: reminderDate, updated_at: now, modified_by: user?.id, modified_by_name: userName } : st), updated_at: now }
+                ? { ...t, subtasks: t.subtasks.map(st => st.id === subtaskId ? { ...st, reminder_date: reminderDate, reminder_recurrence: nextRecurrence, updated_at: now, modified_by: user?.id, modified_by_name: userName } : st), updated_at: now }
                 : t
             )
           }
@@ -4705,7 +5254,7 @@ function ProjectDetail() {
     updateProject(updated)
 
     if (!demoMode) {
-      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, modified_by: user?.id })
+      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id })
 
       // Notify collaborators about the subtask reminder
       if (isShared && reminderDate && subtask) {
@@ -4727,11 +5276,6 @@ function ProjectDetail() {
     if ((a.order_index || 0) !== (b.order_index || 0)) return (a.order_index || 0) - (b.order_index || 0)
     return new Date(b.created_at || 0) - new Date(a.created_at || 0)
   })
-
-  // Multi-select state for tasks
-  const [selectedTaskIds, setSelectedTaskIds] = React.useState(new Set())
-  const [isSelectionMode, setIsSelectionMode] = React.useState(false)
-  const lastSelectedIndex = React.useRef(null)
 
   const clearSelection = () => { setSelectedTaskIds(new Set()); setIsSelectionMode(false); lastSelectedIndex.current = null }
 
@@ -4828,7 +5372,7 @@ function ProjectDetail() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-16">
       {/* Project header + stages — frozen together below the global header + tab bar */}
       <div className="sticky top-28 z-20">
-      <div className="bg-white/80 backdrop-blur-lg">
+      <div className="bg-white/95 backdrop-blur-lg">
         <div className="max-w-5xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4">
           <div className="flex items-center gap-2 sm:gap-4">
             <button
@@ -4869,6 +5413,36 @@ function ProjectDetail() {
             <button onClick={() => setShowShare(true)} className="p-2 hover:bg-gray-100 rounded-lg">
               <Share2 className="w-5 h-5 text-gray-500" />
             </button>
+            <div className="relative">
+              <button ref={exportBtnRef} onClick={() => setShowExportMenu(v => !v)} className="p-2 hover:bg-gray-100 rounded-lg" title="Export project">
+                <Download className="w-5 h-5 text-gray-500" />
+              </button>
+              {/* Portaled to body: the sticky header's backdrop-blur creates a
+                  stacking context that would otherwise hide this menu behind the
+                  Stage Selector bar. */}
+              {showExportMenu && typeof document !== 'undefined' && createPortal(
+                <>
+                  <div className="fixed inset-0 z-[9998]" onClick={() => setShowExportMenu(false)} />
+                  <div
+                    style={{
+                      position: 'fixed',
+                      zIndex: 9999,
+                      top: exportBtnRef.current ? exportBtnRef.current.getBoundingClientRect().bottom + 6 : 80,
+                      left: exportBtnRef.current ? Math.max(8, exportBtnRef.current.getBoundingClientRect().right - 210) : 8,
+                    }}
+                    className="glass-card rounded-xl shadow-lg py-1 min-w-[210px] animate-fade-in"
+                  >
+                    <button onClick={() => { downloadMarkdown(project); setShowExportMenu(false) }} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 text-left">
+                      <FileText className="w-4 h-4 text-gray-500" /> Download Markdown (.md)
+                    </button>
+                    <button onClick={() => { const ok = printProject(project); setShowExportMenu(false); if (!ok) showToast('Please allow pop-ups to print / save as PDF.') }} className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 text-left">
+                      <Printer className="w-4 h-4 text-gray-500" /> Print / Save as PDF
+                    </button>
+                  </div>
+                </>,
+                document.body
+              )}
+            </div>
             <button onClick={() => setShowSettings(true)} className="p-2 hover:bg-gray-100 rounded-lg">
               <Settings className="w-5 h-5 text-gray-500" />
             </button>
@@ -4877,7 +5451,7 @@ function ProjectDetail() {
       </div>
 
       {/* Stage Selector */}
-      <div className="bg-white/60 backdrop-blur-sm border-b border-gray-200">
+      <div className="bg-white/95 backdrop-blur-sm border-b border-gray-200">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="mb-3">
             <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Stages</span>
@@ -5129,7 +5703,8 @@ function ProjectDetail() {
                         </div>
                         <ReminderPicker
                           value={task.reminder_date}
-                          onChange={(date, scope) => updateTaskReminder(task.id, date, scope)}
+                          onChange={(date, scope, rec) => updateTaskReminder(task.id, date, scope, rec)}
+                          recurrence={task.reminder_recurrence || 'none'}
                           compact
                           isShared={isShared}
                         />
@@ -5240,7 +5815,8 @@ function ProjectDetail() {
                             </div>
                             <ReminderPicker
                               value={subtask.reminder_date}
-                              onChange={(date, scope) => updateSubtaskReminder(task.id, subtask.id, date, scope)}
+                              onChange={(date, scope, rec) => updateSubtaskReminder(task.id, subtask.id, date, scope, rec)}
+                              recurrence={subtask.reminder_recurrence || 'none'}
                               compact
                               isShared={isShared}
                             />
@@ -5827,6 +6403,8 @@ function TaskDetail() {
   const { demoMode, user } = useAuth()
   const [newSubtask, setNewSubtask] = useState('')
   const [newComment, setNewComment] = useState('')
+  const [newLinkUrl, setNewLinkUrl] = useState('')
+  const [newLinkLabel, setNewLinkLabel] = useState('')
   const [isSubtaskSelectionMode, setIsSubtaskSelectionMode] = useState(false)
   const [selectedSubtaskIds, setSelectedSubtaskIds] = useState(new Set())
   const [editingSubtaskId, setEditingSubtaskId] = useState(null)
@@ -5834,6 +6412,47 @@ function TaskDetail() {
   const [isEditingTitle, setIsEditingTitle] = useState(false)
   const [localTitle, setLocalTitle] = useState(selectedTask?.task?.title || '')
   const dragSubtaskIndex = useRef(null)
+
+  // Derived task/project — computed before the hooks and early returns below so the
+  // hook order stays stable even when the selected task/project is briefly missing
+  // (e.g. the viewed task is deleted via realtime). All access is optional-chained.
+  const project = projects.find(p => p.id === selectedProject?.id)
+  const { task, stageIndex } = selectedTask || {}
+  const currentTask = project?.stages?.[stageIndex]?.tasks?.find(t => t.id === task?.id)
+  const stage = project?.stages?.[stageIndex]
+
+  // Local description state for robust saving
+  const [localDescription, setLocalDescription] = useState(currentTask?.description || '')
+
+  // Sync local description when currentTask changes (e.g. switching tasks)
+  useEffect(() => {
+    setLocalDescription(currentTask?.description || '')
+    setLocalTitle(currentTask?.title || '')
+    setIsEditingTitle(false)
+  }, [currentTask?.id, currentTask?.description, currentTask?.title])
+
+  const [isEditingDescription, setIsEditingDescription] = useState(false)
+
+  // Long descriptions collapse by default (so subtasks stay reachable).
+  const [descExpanded, setDescExpanded] = useState(false)
+  const [descOverflows, setDescOverflows] = useState(false)
+  const descRef = useRef(null)
+
+  // Reset to collapsed when switching tasks or after editing.
+  useEffect(() => {
+    setDescExpanded(false)
+  }, [currentTask?.id, isEditingDescription])
+
+  // Measure (while collapsed) whether the description is tall enough to need a toggle.
+  useEffect(() => {
+    const el = descRef.current
+    if (!el || isEditingDescription || descExpanded) return
+    setDescOverflows(el.scrollHeight - el.clientHeight > 4)
+  }, [currentTask?.description, isEditingDescription, descExpanded])
+
+  // Comment editing state
+  const [editingCommentId, setEditingCommentId] = useState(null)
+  const [editingCommentContent, setEditingCommentContent] = useState('')
 
   const onSubtaskDragStart = (e, i) => {
     dragSubtaskIndex.current = i
@@ -5850,13 +6469,7 @@ function TaskDetail() {
   }
 
   if (!selectedTask || !selectedProject) return null
-
-  const project = projects.find(p => p.id === selectedProject.id)
   if (!project) return null
-
-  const { task, stageIndex } = selectedTask
-  const currentTask = project.stages[stageIndex]?.tasks?.find(t => t.id === task.id)
-  const stage = project.stages[stageIndex]
   if (!currentTask) return null
 
   const taskOverdue = isOverdue(currentTask.reminder_date) && !currentTask.is_completed
@@ -5906,10 +6519,11 @@ function TaskDetail() {
     }
   }
 
-  const updateTaskReminder = async (reminderDate, scope = 'all') => {
-    updateTask({ reminder_date: reminderDate })
+  const updateTaskReminder = async (reminderDate, scope = 'all', recurrence = 'none') => {
+    const nextRecurrence = reminderDate ? recurrence : 'none'
+    updateTask({ reminder_date: reminderDate, reminder_recurrence: nextRecurrence })
     if (!demoMode) {
-      await db.updateTask(task.id, { reminder_date: reminderDate, modified_by: user?.id })
+      await db.updateTask(task.id, { reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id })
 
       // Notify collaborators about the reminder only if scope === 'all'
       if (isShared && reminderDate && scope === 'all') {
@@ -5922,35 +6536,6 @@ function TaskDetail() {
       }
     }
   }
-
-  // Local description state for robust saving
-  const [localDescription, setLocalDescription] = useState(currentTask?.description || '')
-
-  // Sync local description when currentTask changes (e.g. switching tasks)
-  useEffect(() => {
-    setLocalDescription(currentTask?.description || '')
-    setLocalTitle(currentTask?.title || '')
-    setIsEditingTitle(false)
-  }, [currentTask?.id, currentTask?.description, currentTask?.title])
-
-  const [isEditingDescription, setIsEditingDescription] = useState(false)
-
-  // Long descriptions collapse by default (so subtasks stay reachable).
-  const [descExpanded, setDescExpanded] = useState(false)
-  const [descOverflows, setDescOverflows] = useState(false)
-  const descRef = useRef(null)
-
-  // Reset to collapsed when switching tasks or after editing.
-  useEffect(() => {
-    setDescExpanded(false)
-  }, [currentTask?.id, isEditingDescription])
-
-  // Measure (while collapsed) whether the description is tall enough to need a toggle.
-  useEffect(() => {
-    const el = descRef.current
-    if (!el || isEditingDescription || descExpanded) return
-    setDescOverflows(el.scrollHeight - el.clientHeight > 4)
-  }, [currentTask?.description, isEditingDescription, descExpanded])
 
   const saveDescription = async () => {
     if (localDescription !== currentTask.description) {
@@ -6073,9 +6658,6 @@ function TaskDetail() {
     setIsSubtaskSelectionMode(false)
   }
 
-  const [editingCommentId, setEditingCommentId] = useState(null)
-  const [editingCommentContent, setEditingCommentContent] = useState('')
-
   const startEditingComment = (comment) => {
     setEditingCommentId(comment.id)
     setEditingCommentContent(comment.content)
@@ -6102,6 +6684,41 @@ function TaskDetail() {
     const updatedComments = currentTask.comments.filter(c => c.id !== commentId)
     updateTask({ comments: updatedComments })
     if (!demoMode) await db.deleteComment(commentId)
+  }
+
+  // Reference links: normalize/validate a URL (bare host -> https://, bare DOI ->
+  // doi.org), rejecting any non-http(s) scheme. Mirrors saveDescription's persist.
+  const normalizeLinkUrl = (raw) => {
+    const trimmed = (raw || '').trim()
+    if (!trimmed) return null
+    if (/^(javascript|data|vbscript|file):/i.test(trimmed)) return null
+    let candidate = trimmed
+    if (/^10\.\d{4,9}\//.test(trimmed)) candidate = `https://doi.org/${trimmed}`
+    else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) candidate = `https://${trimmed}`
+    try {
+      const u = new URL(candidate)
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+      return u.href
+    } catch { return null }
+  }
+
+  const addLink = async () => {
+    const url = normalizeLinkUrl(newLinkUrl)
+    if (!url) { showToast('Enter a valid URL'); return }
+    const newLinks = [...(currentTask.links || []), { url, label: newLinkLabel.trim() }]
+    updateTask({ links: newLinks })
+    setNewLinkUrl(''); setNewLinkLabel('')
+    if (!demoMode) {
+      await db.updateTask(task.id, { links: newLinks, modified_by: user?.id, updated_at: new Date().toISOString() })
+    }
+  }
+
+  const removeLink = async (index) => {
+    const newLinks = (currentTask.links || []).filter((_, i) => i !== index)
+    updateTask({ links: newLinks })
+    if (!demoMode) {
+      await db.updateTask(task.id, { links: newLinks, modified_by: user?.id, updated_at: new Date().toISOString() })
+    }
   }
 
   const addSubtask = async () => {
@@ -6245,16 +6862,17 @@ function TaskDetail() {
     }
   }
 
-  const updateSubtaskReminder = async (subtaskId, reminderDate, scope = 'all') => {
+  const updateSubtaskReminder = async (subtaskId, reminderDate, scope = 'all', recurrence = 'none') => {
     const subtask = currentTask.subtasks?.find(s => s.id === subtaskId)
+    const nextRecurrence = reminderDate ? recurrence : 'none'
     updateTask({
       subtasks: currentTask.subtasks.map(s =>
-        s.id === subtaskId ? { ...s, reminder_date: reminderDate, modified_by: user?.id, modified_by_name: userName, updated_at: new Date().toISOString() } : s
+        s.id === subtaskId ? { ...s, reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id, modified_by_name: userName, updated_at: new Date().toISOString() } : s
       )
     })
 
     if (!demoMode) {
-      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, modified_by: user?.id })
+      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id })
 
       // Notify collaborators about the subtask reminder only if scope === 'all'
       if (isShared && reminderDate && subtask && scope === 'all') {
@@ -6379,7 +6997,7 @@ function TaskDetail() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-16">
-      <div className="bg-white/80 backdrop-blur-lg border-b border-gray-200 sticky top-28 z-20">
+      <div className="bg-white/95 backdrop-blur-lg border-b border-gray-200 sticky top-28 z-20">
         <div className="max-w-3xl mx-auto px-3 sm:px-4 py-3 sm:py-4">
           <button
             onClick={() => { setSelectedTask(null); setView('project'); }}
@@ -6516,7 +7134,8 @@ function TaskDetail() {
             <div className="flex items-center gap-3 sm:gap-4 mt-2 text-xs text-gray-400 flex-wrap">
               <ReminderPicker
                 value={currentTask.reminder_date}
-                onChange={updateTaskReminder}
+                onChange={(date, scope, rec) => updateTaskReminder(date, scope, rec)}
+                recurrence={currentTask.reminder_recurrence || 'none'}
               />
               <button
                 onClick={(e) => { e.stopPropagation(); addToToday(currentTask, { projectId: project.id }) }}
@@ -6617,6 +7236,54 @@ function TaskDetail() {
               )}
             </div>
           )}
+        </div>
+
+        {/* Links / References */}
+        <div className="glass-card rounded-xl p-4 sm:p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Links / References</h3>
+          </div>
+
+          {(currentTask.links?.length || 0) > 0 && (
+            <ul className="space-y-2 mb-3">
+              {(currentTask.links || []).map((link, i) => {
+                const safe = /^https?:\/\//i.test(link?.url || '')
+                const text = (link?.label && link.label.trim()) || (link?.url || '').replace(/^https?:\/\//, '').replace(/\/$/, '')
+                return (
+                  <li key={i} className="flex items-center gap-2 group">
+                    {safe ? (
+                      <a href={link.url} target="_blank" rel="noopener noreferrer"
+                         className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 hover:underline truncate">
+                        <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+                        <span className="truncate">{text}</span>
+                      </a>
+                    ) : (
+                      <span className="text-sm text-gray-400 truncate">{text}</span>
+                    )}
+                    <button onClick={() => removeLink(i)} title="Remove link"
+                      className="ml-auto p-1 text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-colors">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input type="url" placeholder="https://… or DOI" value={newLinkUrl}
+              onChange={e => setNewLinkUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addLink() } }}
+              className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all" />
+            <input type="text" placeholder="Label (optional)" value={newLinkLabel}
+              onChange={e => setNewLinkLabel(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addLink() } }}
+              className="sm:w-44 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition-all" />
+            <button onClick={addLink}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg shadow-sm transition-all flex items-center gap-1 justify-center">
+              <Plus className="w-4 h-4" /> Add
+            </button>
+          </div>
         </div>
 
         {/* Subtasks */}
@@ -6780,8 +7447,7 @@ function TaskDetail() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            const proj = projects?.find(p => p.id === task.project_id)
-                            addSubtaskToToday(s, task, { projectId: proj?.id })
+                            addSubtaskToToday(s, task, { projectId: project?.id })
                           }}
                           className="p-1 text-gray-400 hover:text-amber-500 rounded hover:bg-amber-50"
                           title="Add to Tod(o)ay"
@@ -6828,7 +7494,8 @@ function TaskDetail() {
                         {/* Reminder */}
                         <ReminderPicker
                           value={s.reminder_date}
-                          onChange={(date, scope) => updateSubtaskReminder(s.id, date, scope)}
+                          onChange={(date, scope, rec) => updateSubtaskReminder(s.id, date, scope, rec)}
+                          recurrence={s.reminder_recurrence || 'none'}
                           compact
                           isShared={isShared}
                         />
@@ -6985,14 +7652,14 @@ function TaskDetail() {
           </div>
         </div >
 
-    {/* Delete */ }
-    < button
-  onClick = { deleteTask }
-  className = "w-full py-3 bg-red-50 text-red-600 font-semibold rounded-xl hover:bg-red-100 transition-colors"
-    >
-    Delete Task
-        </button >
-      </div >
+        {/* Delete */}
+        <button
+          onClick={deleteTask}
+          className="w-full py-3 bg-red-50 text-red-600 font-semibold rounded-xl hover:bg-red-100 transition-colors"
+        >
+          Delete Task
+        </button>
+      </div>
     </div >
   )
 }
@@ -7340,11 +8007,12 @@ function AllTasksView() {
     }
   }
 
-  const updateSubtaskReminder = async (projectId, stageIndex, taskId, subtaskId, reminderDate, scope = 'all') => {
+  const updateSubtaskReminder = async (projectId, stageIndex, taskId, subtaskId, reminderDate, scope = 'all', recurrence = 'none') => {
     const project = projects.find(p => p.id === projectId)
     if (!project) return
 
     const now = new Date().toISOString()
+    const nextRecurrence = reminderDate ? recurrence : 'none'
     const updatedProject = {
       ...project,
       stages: project.stages.map((s, i) =>
@@ -7352,7 +8020,7 @@ function AllTasksView() {
           ? {
             ...s, tasks: s.tasks.map(t =>
               t.id === taskId
-                ? { ...t, subtasks: t.subtasks.map(st => st.id === subtaskId ? { ...st, reminder_date: reminderDate } : st), updated_at: now }
+                ? { ...t, subtasks: t.subtasks.map(st => st.id === subtaskId ? { ...st, reminder_date: reminderDate, reminder_recurrence: nextRecurrence } : st), updated_at: now }
                 : t
             )
           }
@@ -7364,7 +8032,7 @@ function AllTasksView() {
     if (demoMode) saveLocal(newProjects)
 
     if (!demoMode) {
-      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, modified_by: user?.id })
+      await db.updateSubtask(subtaskId, { reminder_date: reminderDate, reminder_recurrence: nextRecurrence, modified_by: user?.id })
       // Notify collaborators only if scope === 'all' and project is shared
       const isCollaborator = project.owner_id !== user?.id
       const hasMembers = project.project_members?.length > 0
@@ -7852,7 +8520,8 @@ function AllTasksView() {
                             {!isCompleted && (
                               <ReminderPicker
                                 value={subtask.reminder_date}
-                                onChange={(date, scope) => updateSubtaskReminder(project.id, stageIndex, task.id, subtask.id, date, scope)}
+                                onChange={(date, scope, rec) => updateSubtaskReminder(project.id, stageIndex, task.id, subtask.id, date, scope, rec)}
+                                recurrence={subtask.reminder_recurrence || 'none'}
                                 compact
                                 isShared={isSharedProject}
                               />
@@ -8791,10 +9460,10 @@ function AppContent() {
     // keep notifiedOverdueRef in sync for existing overdue notifications
     try {
       const set = new Set()
-        (notifications || []).forEach(n => {
-          if (n.type === 'task_overdue' && n.task_id) set.add(`task-${n.task_id}`)
-          if (n.type === 'subtask_overdue' && n.task_id && n.subtask_id) set.add(`subtask-${n.task_id}-${n.subtask_id}`)
-        })
+      ;(notifications || []).forEach(n => {
+        if (n.type === 'task_overdue' && n.task_id) set.add(`task-${n.task_id}`)
+        if (n.type === 'subtask_overdue' && n.task_id && n.subtask_id) set.add(`subtask-${n.task_id}-${n.subtask_id}`)
+      })
       notifiedOverdueRef.current = set
     } catch (e) { }
   }, [notifications])
@@ -8879,8 +9548,10 @@ function AppContent() {
     return { error: null }
   }
 
-  // Walkthrough: show on first login
-  const WALK_KEY = 'hypothesys_walkthrough_seen_v1'
+  // Walkthrough: show on first login. Bumped to v2 when the tour was rebuilt to
+  // anchor correctly and cover templates/reminders/links/upcoming — so returning
+  // users see the working tour once.
+  const WALK_KEY = 'hypothesys_walkthrough_seen_v2'
   useEffect(() => {
     if (!user) return
     try {
@@ -8934,29 +9605,38 @@ function AppContent() {
       }
     })
 
-    // Prune notifiedOverdueRef for items that are no longer overdue or removed
+    // Recurrence-aware in-memory key: recurring items key on the occurrence
+    // (reminder_date) so a fresh occurrence re-notifies; others key on identity.
+    const isRecurring = (obj) => obj?.reminder_recurrence && obj.reminder_recurrence !== 'none'
+    const taskKey = (task) => isRecurring(task) ? `task-${task.id}-${task.reminder_date}` : `task-${task.id}`
+    const subKey = (task, st) => isRecurring(st) ? `subtask-${task.id}-${st.id}-${st.reminder_date}` : `subtask-${task.id}-${st.id}`
+
+    // Prune notifiedOverdueRef down to keys of items still overdue right now.
     try {
-      const currentTaskKeys = new Set(overdueTasks.map(o => `task-${o.task.id}`))
-      const currentSubtaskKeys = new Set(overdueSubtasks.map(o => `subtask-${o.task.id}-${o.subtask.id}`))
-      const currentTodayKeys = new Set(overdueTodayItems.map(o => `today-${o.id}`))
+      const currentKeys = new Set()
+      overdueTasks.forEach(o => currentKeys.add(taskKey(o.task)))
+      overdueSubtasks.forEach(o => currentKeys.add(subKey(o.task, o.subtask)))
+      overdueTodayItems.forEach(o => currentKeys.add(`today-${o.id}`))
       const keep = new Set()
-      notifiedOverdueRef.current.forEach(k => {
-        if (k.startsWith('task-') && currentTaskKeys.has(k)) keep.add(k)
-        if (k.startsWith('subtask-') && currentSubtaskKeys.has(k)) keep.add(k)
-        if (k.startsWith('today-') && currentTodayKeys.has(k)) keep.add(k)
-      })
+      notifiedOverdueRef.current.forEach(k => { if (currentKeys.has(k)) keep.add(k) })
       notifiedOverdueRef.current = keep
     } catch (e) { }
 
-    // Create notifications for overdue items that don't already have one
+    // Create notifications for overdue items that don't already have one.
+    // `advances` records recurring items to reschedule to their next occurrence.
     const newNotifications = []
+    const advances = []
     const existingNotifKeys = new Set(existingNotifications.map(n => `${n.type}-${n.task_id || ''}-${n.subtask_id || ''}`))
 
     overdueTasks.forEach(({ project, task }) => {
-      const key = `task-${task.id}`
+      const recurring = isRecurring(task)
+      const key = taskKey(task)
       const existingKey = `task_overdue-${task.id}-`
-      // skip if already notified (in-memory set) or existing notifications include it
-      if (!notifiedOverdueRef.current.has(key) && !existingNotifKeys.has(existingKey) && !dismissedNotificationsRef.current.has(existingKey)) {
+      // Recurring items bypass the one-shot existing/dismissed guards (each
+      // occurrence should fire once); the occurrence key prevents same-run dupes.
+      const blocked = notifiedOverdueRef.current.has(key) ||
+        (!recurring && (existingNotifKeys.has(existingKey) || dismissedNotificationsRef.current.has(existingKey)))
+      if (!blocked) {
         newNotifications.push({
           id: uuid(),
           type: 'task_overdue',
@@ -8968,15 +9648,21 @@ function AppContent() {
           created_at: new Date().toISOString(),
           reminder_date: task.reminder_date
         })
-        // mark as notified to avoid repeats
         try { notifiedOverdueRef.current.add(key) } catch (e) { }
+      }
+      if (recurring) {
+        const next = nextOccurrence(task.reminder_date, task.reminder_recurrence)
+        if (next) advances.push({ kind: 'task', taskId: task.id, next, memKey: key })
       }
     })
 
     overdueSubtasks.forEach(({ project, task, subtask }) => {
-      const key = `subtask-${task.id}-${subtask.id}`
+      const recurring = isRecurring(subtask)
+      const key = subKey(task, subtask)
       const existingKey = `subtask_overdue-${task.id}-${subtask.id}`
-      if (!notifiedOverdueRef.current.has(key) && !existingNotifKeys.has(existingKey) && !dismissedNotificationsRef.current.has(existingKey)) {
+      const blocked = notifiedOverdueRef.current.has(key) ||
+        (!recurring && (existingNotifKeys.has(existingKey) || dismissedNotificationsRef.current.has(existingKey)))
+      if (!blocked) {
         newNotifications.push({
           id: uuid(),
           type: 'subtask_overdue',
@@ -8990,6 +9676,10 @@ function AppContent() {
           reminder_date: subtask.reminder_date
         })
         try { notifiedOverdueRef.current.add(key) } catch (e) { }
+      }
+      if (recurring) {
+        const next = nextOccurrence(subtask.reminder_date, subtask.reminder_recurrence)
+        if (next) advances.push({ kind: 'subtask', subtaskId: subtask.id, next, memKey: key })
       }
     })
 
@@ -9011,7 +9701,7 @@ function AppContent() {
       }
     })
 
-    return newNotifications
+    return { notifications: newNotifications, advances }
   }
 
   // Effect to check for overdue tasks when projects change AND periodically
@@ -9020,16 +9710,21 @@ function AppContent() {
 
     const runOverdueCheck = async () => {
       const currentNotifications = notificationsRef.current
-      const newOverdueNotifications = checkOverdueTasks(projects, currentNotifications, todayItems)
+      const { notifications: newOverdueNotifications, advances } = checkOverdueTasks(projects, currentNotifications, todayItems)
 
       if (newOverdueNotifications.length > 0) {
-        const allNotifications = [...newOverdueNotifications, ...currentNotifications]
+        // Mirror the server's upsert dedup in demo mode: drop any existing
+        // overdue notification that a new one supersedes (same entity+type).
+        const entityKey = (n) => `${n.type}-${n.task_id || ''}-${n.subtask_id || ''}-${n.today_item_id || ''}`
+        const newKeys = new Set(newOverdueNotifications.map(entityKey))
+        const survivors = currentNotifications.filter(n => !newKeys.has(entityKey(n)))
+        const allNotifications = [...newOverdueNotifications, ...survivors]
         setNotifications(allNotifications)
 
         if (demoMode) {
           localStorage.setItem('hypothesys_notifications', JSON.stringify(allNotifications))
         } else {
-          // Save new notifications to the database
+          // Save new notifications to the database (upsert refreshes the single row)
           for (const notif of newOverdueNotifications) {
             await db.createNotification({
               ...notif,
@@ -9037,6 +9732,45 @@ function AppContent() {
             })
           }
         }
+      }
+
+      // Reschedule recurring reminders to their next occurrence. Advancing the
+      // date past `now` clears isOverdue, which is what prevents re-fire loops.
+      // No modified_by is sent, so collaborators are NOT spammed each cycle.
+      if (advances.length > 0) {
+        const taskAdvances = new Map()
+        const subtaskAdvances = new Map()
+        for (const a of advances) {
+          if (a.kind === 'task') taskAdvances.set(a.taskId, a.next)
+          else if (a.kind === 'subtask') subtaskAdvances.set(a.subtaskId, a.next)
+        }
+        // Functional update: merge into the LATEST state so a concurrent edit
+        // (realtime refetch or the user's own optimistic change) made during the
+        // preceding `await db.createNotification` isn't clobbered by a stale snapshot.
+        const applyAdvances = (list) => list.map(project => ({
+          ...project,
+          stages: (project.stages || []).map(stage => ({
+            ...stage,
+            tasks: (stage.tasks || []).map(task => {
+              let t = task
+              if (taskAdvances.has(task.id)) t = { ...t, reminder_date: taskAdvances.get(task.id) }
+              if ((t.subtasks || []).some(st => subtaskAdvances.has(st.id))) {
+                t = { ...t, subtasks: t.subtasks.map(st => subtaskAdvances.has(st.id) ? { ...st, reminder_date: subtaskAdvances.get(st.id) } : st) }
+              }
+              return t
+            })
+          }))
+        }))
+        setProjects(applyAdvances)
+        if (demoMode) {
+          // Demo mode has no realtime/await before this point, so the closure is fresh.
+          saveLocal(applyAdvances(projects))
+        } else {
+          for (const [taskId, next] of taskAdvances) await db.updateTask(taskId, { reminder_date: next })
+          for (const [subtaskId, next] of subtaskAdvances) await db.updateSubtask(subtaskId, { reminder_date: next })
+        }
+        // Let the next occurrence notify again.
+        advances.forEach(a => { try { notifiedOverdueRef.current.delete(a.memKey) } catch (e) { } })
       }
     }
 
@@ -9475,15 +10209,16 @@ function AppContent() {
         )}
         <Walkthrough
           steps={[
-            { title: 'Welcome to HypotheSys™', body: 'Tip: Tap the logo to return to this dashboard anytime.', selector: '#app-logo' },
-            { title: 'Projects', body: 'Create and organize projects here.', selector: '#tab-projects' },
-            { title: 'Reorder Projects', body: 'Reorder your projects to change priority.', selector: '#projects-reorder-btn' },
-            { title: 'Sharing', body: 'Share projects with collaborators and see shared badges.', selector: '#project-card-0-shared-desktop' },
-            { title: 'Tasks & Subtasks', body: 'Manage tasks, set reminders, and add subtasks under each task.', selector: '#tab-tasks' },
-            { title: 'Tod(o)ay', body: 'Quickly pick today’s priorities or add fast local items.', selector: '#tab-today' }
+            { title: 'Welcome to HypotheSys™', body: 'Your research home base. This quick tour takes 20 seconds — tap the logo anytime to come back here.', selector: '#app-logo' },
+            { title: 'Start a project', body: 'Begin from a ready-made template — Manuscript, Experiment, Literature Review, Grant, Thesis — or a blank one, then shape its workflow stages.', selector: '#new-project-btn' },
+            { title: 'Projects', body: 'All your projects live here. Switch between board, grid, and list views, sort by priority or progress, drag to reorder, and share with collaborators.', selector: '#tab-projects' },
+            { title: 'Tasks & subtasks', body: 'Break work into tasks and subtasks across every project. Add reminders (one-off or recurring), tags, reference links to papers/DOIs, and comments.', selector: '#tab-tasks' },
+            { title: 'Tod(o)ay & Upcoming', body: 'Plan today, and open the Upcoming view to see every reminder across all projects, grouped by day.', selector: '#tab-today' },
+            { title: 'Search anything', body: 'Jump straight to any project, task, or subtask.', selector: '#global-search' },
+            { title: 'Notifications', body: 'Reminders and collaborator activity arrive here — and you choose exactly what notifies you from your profile settings.', selector: '#notifications-btn' }
           ]}
           visible={walkVisible}
-          onClose={() => { try { localStorage.setItem('hypothesys_walkthrough_seen_v1', '1') } catch (e) { }; setWalkVisible(false) }}
+          onClose={() => { try { localStorage.setItem(WALK_KEY, '1') } catch (e) { }; setWalkVisible(false) }}
         />
         {view === 'project' && <ProjectDetail />}
         {view === 'task' && <TaskDetail />}

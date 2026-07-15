@@ -8,6 +8,9 @@
 -- EXTENSIONS
 -- ============================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- pgcrypto provides gen_random_bytes(), used for project_invitations.token below.
+-- On Supabase it is normally pre-enabled; declared here so a fresh DB never fails.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ============================================================
 -- TABLES
@@ -63,9 +66,11 @@ CREATE TABLE IF NOT EXISTS public.tasks (
   stage_id UUID NOT NULL REFERENCES public.stages(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   description TEXT,
+  links JSONB DEFAULT '[]'::jsonb,
   order_index INTEGER DEFAULT 0,
   is_completed BOOLEAN DEFAULT FALSE,
   reminder_date TIMESTAMPTZ,
+  reminder_recurrence TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   created_by UUID REFERENCES public.users(id),
@@ -79,6 +84,7 @@ CREATE TABLE IF NOT EXISTS public.subtasks (
   title TEXT NOT NULL,
   is_completed BOOLEAN DEFAULT FALSE,
   reminder_date TIMESTAMPTZ,
+  reminder_recurrence TEXT,
   order_index INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -227,6 +233,29 @@ BEGIN
     SELECT 1 FROM pg_constraint WHERE conname = 'notifications_unique_per_entity'
   ) THEN
     EXECUTE 'ALTER TABLE public.notifications ADD CONSTRAINT notifications_unique_per_entity UNIQUE (user_id, type, task_id, subtask_id)';
+  END IF;
+
+  -- Task reference links (array of {url,label}).
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'tasks' AND column_name = 'links'
+  ) THEN
+    ALTER TABLE public.tasks ADD COLUMN links JSONB DEFAULT '[]'::jsonb;
+  END IF;
+
+  -- Recurring reminders (none|daily|weekly|monthly) on tasks and subtasks.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'tasks' AND column_name = 'reminder_recurrence'
+  ) THEN
+    ALTER TABLE public.tasks ADD COLUMN reminder_recurrence TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'subtasks' AND column_name = 'reminder_recurrence'
+  ) THEN
+    ALTER TABLE public.subtasks ADD COLUMN reminder_recurrence TEXT;
   END IF;
 END;
 $$;
@@ -394,14 +423,35 @@ CREATE POLICY "Users can view own membership"
     )
   );
 
+-- SECURITY: a non-owner may add ONLY themselves and ONLY when a matching
+-- invitation exists (pending, unexpired, same email, same role). Previously any
+-- signed-in user who knew a project UUID could self-insert as 'editor'.
+-- NOTE: the correlated columns MUST be table-qualified (project_members.*)
+-- because project_invitations also has project_id and role columns.
 DROP POLICY IF EXISTS "Users can insert membership or invite themselves" ON public.project_members;
-CREATE POLICY "Users can insert membership or invite themselves"
+DROP POLICY IF EXISTS "Members added by owner or via valid invitation" ON public.project_members;
+CREATE POLICY "Members added by owner or via valid invitation"
   ON public.project_members FOR INSERT
   WITH CHECK (
-    user_id = auth.uid()
-    OR EXISTS (
+    -- (1) Project owner may add ANY member at ANY role.
+    EXISTS (
       SELECT 1 FROM public.projects p
-      WHERE p.id = project_id AND p.owner_id = auth.uid()
+      WHERE p.id = project_members.project_id AND p.owner_id = auth.uid()
+    )
+    OR
+    -- (2) A non-owner may insert ONLY their own row, ONLY when a matching
+    --     invitation is pending, not expired, addressed to their email
+    --     (case-insensitive), and at the SAME role (no self-granting editor).
+    (
+      project_members.user_id = auth.uid()
+      AND EXISTS (
+        SELECT 1 FROM public.project_invitations pi
+        WHERE pi.project_id = project_members.project_id
+          AND pi.status = 'pending'
+          AND pi.expires_at > now()
+          AND lower(pi.email) = lower(coalesce(auth.email(), ''))
+          AND pi.role = project_members.role
+      )
     )
   );
 
@@ -433,6 +483,49 @@ CREATE POLICY "Users can delete own membership or owners can manage members"
       WHERE p.id = project_id AND p.owner_id = auth.uid()
     )
   );
+
+-- SECURITY: RLS can't compare OLD vs NEW, so the UPDATE policy above lets a
+-- member target their own row (needed for personal priority_rank) but can't stop
+-- them flipping role viewer->editor. This BEFORE UPDATE trigger forbids a
+-- non-owner from changing role / user_id / project_id, while leaving
+-- priority_rank self-updates working. Owners may change anything.
+CREATE OR REPLACE FUNCTION public.enforce_member_update_rules()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_is_owner BOOLEAN;
+BEGIN
+  SELECT EXISTS (
+    SELECT 1 FROM public.projects p
+    WHERE p.id = NEW.project_id AND p.owner_id = auth.uid()
+  ) INTO v_is_owner;
+
+  IF v_is_owner THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.role       IS DISTINCT FROM OLD.role
+     OR NEW.user_id    IS DISTINCT FROM OLD.user_id
+     OR NEW.project_id IS DISTINCT FROM OLD.project_id THEN
+    RAISE EXCEPTION 'Not authorized to change role, user_id, or project_id on a membership row'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS enforce_member_update ON public.project_members;
+CREATE TRIGGER enforce_member_update
+  BEFORE UPDATE ON public.project_members
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_member_update_rules();
+
+-- Defense in depth (the end-of-file REVOKE loop also covers this); triggers
+-- fire regardless of EXECUTE grants, so no GRANT is needed.
+REVOKE EXECUTE ON FUNCTION public.enforce_member_update_rules() FROM PUBLIC, anon, authenticated;
 
 -- ---- project_invitations ----
 DROP POLICY IF EXISTS "Owners and invitees can view invitations" ON public.project_invitations;

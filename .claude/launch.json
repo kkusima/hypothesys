@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hypothesys-demo",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["cross-env", "VITE_SUPABASE_ANON_KEY=demo-mode-invalid-key", "vite", "--port", "3000"],
+      "port": 3000
+    },
+    {
+      "name": "hypothesys-live",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    }
+  ]
+}

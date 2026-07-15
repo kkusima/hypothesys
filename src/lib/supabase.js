@@ -522,7 +522,9 @@ export const db = {
           .single()
         if (stage && stage.project_id) {
           try {
-            await db.notifyCollaborators(stage.project_id, null, {
+            // Exclude the user performing the delete so they aren't notified about their own action
+            const { data: { user: authUser } } = await supabase.auth.getUser()
+            await db.notifyCollaborators(stage.project_id, authUser?.id || null, {
               type: 'task_deleted',
               title: 'Task deleted',
               message: `${task.title} was deleted`,
@@ -616,43 +618,24 @@ export const db = {
           const project = stage?.project
 
           if (project && stage?.project_id) {
-            // Get all project members except the modifier
-            const { data: members } = await supabase
-              .from('project_members')
-              .select('user_id')
-              .eq('project_id', stage.project_id)
+            // Get modifier's name for the message
+            let modifierName = 'Someone'
+            const { data: userData } = await supabase
+              .from('users')
+              .select('name, email')
+              .eq('id', updates.modified_by)
+              .single()
+            modifierName = userData?.name || userData?.email || 'Someone'
 
-            const notifyIds = (members || []).map(m => m.user_id).filter(uid => uid !== updates.modified_by)
-
-            // Also notify owner if not the modifier
-            if (project.owner_id && project.owner_id !== updates.modified_by && !notifyIds.includes(project.owner_id)) {
-              notifyIds.push(project.owner_id)
-            }
-
-            // Get modifier's name
-            let modifierName = ''
-            if (updates.modified_by) {
-              const { data: userData } = await supabase
-                .from('users')
-                .select('name, email')
-                .eq('id', updates.modified_by)
-                .single()
-              modifierName = userData?.name || userData?.email || 'Someone'
-            }
-
-            // Create notifications
-            for (const uid of notifyIds) {
-              await supabase.from('notifications').insert({
-                user_id: uid,
-                type: 'subtask_modified',
-                title: 'Subtask modified',
-                message: `${project?.emoji || ''} ${project?.title || ''}: ${task.title} → ${data.title} (by ${modifierName})`,
-                project_id: stage.project_id,
-                task_id: data.task_id,
-                subtask_id: data.id,
-                is_read: false
-              })
-            }
+            // Fan out through the shared helper: it notifies owner + members,
+            // excludes the modifier, and upserts to avoid duplicate notifications.
+            await db.notifyCollaborators(stage.project_id, updates.modified_by, {
+              type: 'subtask_modified',
+              title: 'Subtask modified',
+              message: `${task.title} → ${data.title} (by ${modifierName})`,
+              task_id: data.task_id,
+              subtask_id: data.id
+            })
           }
         }
       }
