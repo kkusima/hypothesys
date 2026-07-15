@@ -488,3 +488,24 @@ body {
 .reminder-badge:hover {
   transform: scale(1.05);
 }
+
+/* ============================================
+   "ALREADY ON TOD(O)AY" INDICATOR
+   ============================================ */
+/* Applied to the Add-to-Tod(o)ay sun button when the task/subtask already has a
+   copy on the Tod(o)ay list — a soft amber glow so it reads as "already there". */
+@keyframes todayGlowPulse {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.55)); }
+  50%      { filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.9)); }
+}
+
+.today-glow svg {
+  animation: todayGlowPulse 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .today-glow svg {
+    animation: none;
+    filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.7));
+  }
+}

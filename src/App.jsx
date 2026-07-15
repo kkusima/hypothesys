@@ -102,6 +102,15 @@ const nextOccurrence = (iso, recurrence, from = new Date()) => {
   return d.toISOString()
 }
 
+// Whether a task / subtask already has a copy on the Tod(o)ay list. A subtask
+// copy carries the parent's sourceTaskId AND a sourceSubtaskId, so a task is
+// "on today" only when a matching item has no subtask id (legacy items use
+// taskId/subtaskId instead of sourceTaskId/sourceSubtaskId).
+const isTaskOnToday = (todayItems, taskId) =>
+  !!taskId && (todayItems || []).some(i => (i.sourceTaskId === taskId || i.taskId === taskId) && !i.sourceSubtaskId && !i.subtaskId)
+const isSubtaskOnToday = (todayItems, subtaskId) =>
+  !!subtaskId && (todayItems || []).some(i => i.sourceSubtaskId === subtaskId || i.subtaskId === subtaskId)
+
 // Format date for input field (using local timezone)
 const formatDateForInput = (dateString) => {
   if (!dateString) return ''
@@ -4203,7 +4212,9 @@ function KanbanScrollContainer({ children }) {
 }
 
 function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday }) {
+  const { todayItems } = useApp()
   const taskOverdue = isOverdue(task.reminder_date) && !task.is_completed
+  const onToday = isTaskOnToday(todayItems, task.id)
   const visibleTags = task.tags || []
 
   return (
@@ -4285,8 +4296,8 @@ function KanbanTaskCard({ project, stageIndex, task, onOpenTask, onAddToToday })
               e.stopPropagation()
               onAddToToday(task)
             }}
-            className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-amber-50 hover:text-amber-500"
-            title="Add to Tod(o)ay"
+            className={`rounded-lg p-1.5 transition-colors ${onToday ? 'text-amber-500 bg-amber-50 today-glow' : 'text-gray-400 hover:bg-amber-50 hover:text-amber-500'}`}
+            title={onToday ? 'On your Tod(o)ay list' : 'Add to Tod(o)ay'}
           >
             <Sun className="w-4 h-4" />
           </button>
@@ -4893,7 +4904,7 @@ function CreateProjectModal({ onClose }) {
 // PROJECT DETAIL VIEW
 // ============================================
 function ProjectDetail() {
-  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef, registerUndo, reloadProjects, showToast } = useApp()
+  const { projects, setProjects, selectedProject, setSelectedProject, setView, setSelectedTask, addToToday, addSubtaskToToday, todayItems, tags, createTag, editTag, deleteTag, assignTag, unassignTag, reorderTasks, reorderSubtasks, deletedTaskIdsRef, registerUndo, reloadProjects, showToast } = useApp()
   const { demoMode, user } = useAuth()
   const currentUserName = user?.user_metadata?.name || user?.email || 'Unknown'
   const [previewIndex, setPreviewIndex] = useState(null)
@@ -5710,8 +5721,8 @@ function ProjectDetail() {
                         />
                         <button
                           onClick={(e) => { e.stopPropagation(); addToToday(task, { projectId: project.id }) }}
-                          className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                          title="Add to Tod(o)ay"
+                          className={`p-2 rounded-lg transition-colors ${isTaskOnToday(todayItems, task.id) ? 'text-amber-500 bg-amber-50 today-glow' : 'text-gray-400 hover:text-green-600 hover:bg-green-50'}`}
+                          title={isTaskOnToday(todayItems, task.id) ? 'On your Tod(o)ay list' : 'Add to Tod(o)ay'}
                         >
                           <Sun className="w-4 h-4" />
                         </button>
@@ -5822,8 +5833,8 @@ function ProjectDetail() {
                             />
                             <button
                               onClick={(e) => { e.stopPropagation(); addSubtaskToToday(subtask, task, { projectId: project.id }) }}
-                              className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                              title="Add subtask to Tod(o)ay"
+                              className={`p-2 rounded-lg transition-colors ${isSubtaskOnToday(todayItems, subtask.id) ? 'text-amber-500 bg-amber-50 today-glow' : 'text-gray-400 hover:text-green-600 hover:bg-green-50'}`}
+                              title={isSubtaskOnToday(todayItems, subtask.id) ? 'On your Tod(o)ay list' : 'Add subtask to Tod(o)ay'}
                             >
                               <Sun className="w-4 h-4" />
                             </button>
@@ -6396,7 +6407,7 @@ function ShareModal({ project, onClose, onUpdate }) {
 // ============================================
 function TaskDetail() {
   const {
-    projects, setProjects, selectedProject, setSelectedProject, selectedTask, setSelectedTask, setView, addToToday, addSubtaskToToday,
+    projects, setProjects, selectedProject, setSelectedProject, selectedTask, setSelectedTask, setView, addToToday, addSubtaskToToday, todayItems,
     tags, activeTagPicker, setActiveTagPicker, assignTag, unassignTag, createTag, editTag, deleteTag, reorderSubtasks,
     showToast, deletedTaskIdsRef, registerUndo, reloadProjects
   } = useApp()
@@ -7139,8 +7150,8 @@ function TaskDetail() {
               />
               <button
                 onClick={(e) => { e.stopPropagation(); addToToday(currentTask, { projectId: project.id }) }}
-                className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                title="Add task to Tod(o)ay"
+                className={`p-2 rounded-lg transition-colors ${isTaskOnToday(todayItems, currentTask.id) ? 'text-amber-500 bg-amber-50 today-glow' : 'text-gray-400 hover:text-green-600 hover:bg-green-50'}`}
+                title={isTaskOnToday(todayItems, currentTask.id) ? 'On your Tod(o)ay list' : 'Add task to Tod(o)ay'}
               >
                 <Sun className="w-4 h-4" />
               </button>
@@ -7449,8 +7460,8 @@ function TaskDetail() {
                             e.stopPropagation()
                             addSubtaskToToday(s, task, { projectId: project?.id })
                           }}
-                          className="p-1 text-gray-400 hover:text-amber-500 rounded hover:bg-amber-50"
-                          title="Add to Tod(o)ay"
+                          className={`p-1 rounded ${isSubtaskOnToday(todayItems, s.id) ? 'text-amber-500 bg-amber-50 today-glow' : 'text-gray-400 hover:text-amber-500 hover:bg-amber-50'}`}
+                          title={isSubtaskOnToday(todayItems, s.id) ? 'On your Tod(o)ay list' : 'Add to Tod(o)ay'}
                         >
                           <Sun className="w-3.5 h-3.5" />
                         </button>
