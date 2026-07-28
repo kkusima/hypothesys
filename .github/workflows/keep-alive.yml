@@ -43,10 +43,15 @@ jobs:
             echo "::error::Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY repo secret."
             exit 1
           fi
-          # A LIMIT 1 select on a core table. RLS returns 0 rows for the anon role,
-          # but the query still runs against Postgres — that is the activity we need.
+          # LIMIT 1 select on today_items. Its RLS policy is a plain
+          # `user_id = auth.uid()` (no SECURITY DEFINER helper), so the anon role —
+          # whose auth.uid() is null — gets a clean 200 with an empty array while
+          # the query still executes against Postgres. That executed query is the
+          # activity that resets the pause timer. (Do NOT point this at `projects`:
+          # its policy calls is_project_member(), which anon may not execute, so it
+          # 401s with "permission denied for function".)
           code=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
-            "${SUPABASE_URL}/rest/v1/projects?select=id&limit=1" \
+            "${SUPABASE_URL}/rest/v1/today_items?select=id&limit=1" \
             -H "apikey: ${SUPABASE_ANON_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
           echo "HTTP ${code}"
