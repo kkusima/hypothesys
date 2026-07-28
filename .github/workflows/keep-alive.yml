@@ -1,0 +1,59 @@
+# Keeps the Supabase free-tier project from pausing.
+#
+# Supabase pauses a free project after ~7 days with no database activity. This
+# workflow runs a tiny read against the REST (PostgREST) API twice a week, which
+# executes a SQL query and resets the inactivity timer — no pause, no cost.
+#
+# REQUIRED repo secrets (Settings -> Secrets and variables -> Actions):
+#   VITE_SUPABASE_URL       e.g. https://<project-ref>.supabase.co
+#   VITE_SUPABASE_ANON_KEY  the project's anon/public key (JWT)
+# (Same names the other workflows use, so you only manage one pair.)
+#
+# NOTE: this deliberately has NO hardcoded key fallback — if a secret is missing
+# it fails loudly instead of shipping a key in the repo. Rotate the anon key if
+# it was ever committed, then set these secrets.
+name: Keep Supabase Alive
+
+on:
+  schedule:
+    # 06:00 UTC every Monday and Thursday — max gap ~3-4 days, well under 7.
+    - cron: '0 6 * * 1,4'
+  # Manual trigger from the Actions tab (useful right after setup).
+  workflow_dispatch:
+
+# Don't let a queued run pile up on a slow one.
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase (keep-alive read)
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "::error::Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY repo secret."
+            exit 1
+          fi
+          # A LIMIT 1 select on a core table. RLS returns 0 rows for the anon role,
+          # but the query still runs against Postgres — that is the activity we need.
+          code=$(curl -sS -o /tmp/resp.txt -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/projects?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+          echo "HTTP ${code}"
+          echo "Response: $(cat /tmp/resp.txt)"
+          if [ "${code}" -ge 200 ] && [ "${code}" -lt 300 ]; then
+            echo "✅ Keep-alive query executed — Supabase inactivity timer reset."
+          else
+            echo "::error::Keep-alive failed with HTTP ${code}. Check the secrets and that the project isn't already paused (paused projects must be restored from the dashboard)."
+            exit 1
+          fi
